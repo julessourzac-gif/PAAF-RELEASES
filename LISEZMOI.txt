@@ -1,23 +1,26 @@
-IMPORT PRO TOOLS — installation
-================================
+PAAF — installation
+===================
 
 1. Double-cliquer sur le .zip (déjà fait si vous lisez ceci).
-2. Glisser « Import Pro Tools » dans le dossier Applications.
+2. Glisser « PAAF » dans le dossier Applications.
+   (L'ancienne version s'appelait « Import Pro Tools » : vous pouvez la supprimer.)
 3. Premier lancement : clic droit sur l'app > Ouvrir.
    Si macOS bloque l'ouverture (« développeur non identifié ») :
      Réglages Système > Confidentialité et sécurité > « Ouvrir quand même »
    ou, dans le Terminal :
-     xattr -dr com.apple.quarantine "/Applications/Import Pro Tools.app"
+     xattr -dr com.apple.quarantine "/Applications/PAAF.app"
 4. Au premier lancement, l'app prépare son environnement (1 à 2 min, connexion
    Internet requise) et propose d'installer via Homebrew ce qui manque :
-   Tkinter (interface) et ffmpeg (extraction rapide de l'audio des vidéos).
+   Tkinter (interface) et ffmpeg (conversion rapide de l'audio des vidéos).
 
 Prérequis : macOS 11+, Homebrew (https://brew.sh), Pro Tools 2023 ou plus récent.
 
-Utilisation : ouvrir la session dans Pro Tools, lancer l'app, glisser les AAF /
+Utilisation : ouvrir la session dans Pro Tools, lancer PAAF, glisser les AAF /
 vidéos (ou dossiers) depuis le Finder, choisir le placement, « Importer ».
+Un AAF et une vidéo de même nom sont calés au même TC. Cliquer sur un fichier
+affiche son contenu dans l'inspecteur (pistes, clips, métadonnées audio).
 
 Journal technique :
-  ~/Library/Application Support/Import Pro Tools/ptimport.log
+  ~/Library/Application Support/PAAF/paaf.log
 Réinstallation complète de l'environnement : supprimer le dossier
-  ~/Library/Application Support/Import Pro Tools/env
+  ~/Library/Application Support/PAAF/env

@@ -40,7 +40,7 @@ jobs:
       - name: Archiver le build
         uses: actions/upload-artifact@v4
         with:
-          name: Import_Pro_Tools
+          name: PAAF
           path: dist/*.zip
 
       - name: Publier la release
@@ -57,5 +57,5 @@ jobs:
               gh release edit "$tag" --notes-file notes.md
             fi
           else
-            gh release create "$tag" dist/*.zip --title "Import Pro Tools $tag" --notes-file notes.md
+            gh release create "$tag" dist/*.zip --title "PAAF $tag" --notes-file notes.md
           fi

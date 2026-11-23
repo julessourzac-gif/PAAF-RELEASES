@@ -2,9 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Import Pro Tools</string>
-  <key>CFBundleDisplayName</key><string>Import Pro Tools</string>
-  <key>CFBundleIdentifier</key><string>io.bernik.ptimport</string>
+  <key>CFBundleName</key><string>PAAF</string>
+  <key>CFBundleDisplayName</key><string>PAAF</string>
+  <key>CFBundleIdentifier</key><string>io.bernik.paaf</string>
   <key>CFBundleExecutable</key><string>launcher</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>

@@ -1,6 +1,6 @@
 # PAAF-RELEASES
 
-Logiciel d'import AAF et vidéo pour Pro Tools : **Import Pro Tools**.
+**PAAF** : import d'AAF et de vidéos dans Pro Tools (anciennement « Import Pro Tools »).
 
 Importe à la suite plusieurs AAF / OMF et vidéos dans la session Pro Tools ouverte, chacun à
 son point d'entrée timecode, via le **PTSL** (Pro Tools Scripting Library, l'API officielle
@@ -9,36 +9,48 @@ d'Avid). Aucune automatisation de l'interface de Pro Tools.
 ## Fonctions
 
 - Glisser-déposer de fichiers ou de dossiers depuis le Finder
-- Placement : espacement fixe, bout à bout avec blanc, ou TC manuel par fichier ; plans CSV
-- **AAF / OMF** : Import Session Data, toutes les pistes en nouvelles pistes, clips et médias,
-  gain de clip, automation de volume, « Map start timecode to »
+- Placement : espacement fixe, bout à bout avec blanc, ou TC manuel (édition directe dans la
+  liste) ; plans CSV
+- **AAF et vidéo de même nom calés au même TC** automatiquement
+- **AAF / OMF** : Import Session Data, clips et médias, gain de clip, automation de volume,
+  « Map start timecode to » ; en nouvelles pistes ou **fusionnés dans les pistes de même nom**
+  de la session (Match Tracks)
+- **Inspecteur** : pistes et clips d'un AAF (position dans Pro Tools), métadonnées des médias
+  audio (fréquence, résolution, canaux, TC d'origine BWF, Scene/Take, embarqué ou lié), paires
+  stéréo probables ; pour une vidéo, flux audio et analyse des canaux
+- **Pistes de la session** affichées (type, format, clips) pour préparer l'import
 - **Vidéos** : image sur la Main Video Track (créée si absente), spottée au TC
-- **Audio des vidéos** : extrait par ffmpeg en parallèle, au format de la session, posé sur des
-  pistes communes (« AUDIO VIDEO », ou une piste mono par canal)
+- **Audio des vidéos** : converti par ffmpeg au format de la session, dès l'ajout des fichiers
+  (préconversion), puis posé sur des pistes communes (« AUDIO VIDEO » en stéréo,
+  « AUDIO VIDEO MONO » en mono, « AUDIO VIDEO 1…n » en multicanal)
+- **Détection stéréo** : une stéréo à canaux identiques (double mono) ou à un seul canal utile
+  est importée en mono
 
 ## Installation
 
-1. Télécharger le dernier `Import_Pro_Tools_vX.Y.zip` dans
+1. Télécharger le dernier `PAAF_vX.Y.zip` dans
    [Releases](https://github.com/julessourzac-gif/PAAF-RELEASES/releases).
-2. Décompresser, glisser **Import Pro Tools** dans Applications.
+2. Décompresser, glisser **PAAF** dans Applications (supprimer l'ancien « Import Pro Tools »).
 3. Premier lancement : clic droit > **Ouvrir** (application non signée). Si macOS bloque :
    Réglages Système > Confidentialité et sécurité > **Ouvrir quand même**, ou
-   `xattr -dr com.apple.quarantine "/Applications/Import Pro Tools.app"`.
+   `xattr -dr com.apple.quarantine "/Applications/PAAF.app"`.
 4. L'application prépare son environnement Python (1 à 2 min) et propose d'installer via
    Homebrew ce qui manque (Tkinter, ffmpeg).
 
 Prérequis : macOS 11+, [Homebrew](https://brew.sh), Pro Tools 2023 ou plus récent.
 
-Journal technique : `~/Library/Application Support/Import Pro Tools/ptimport.log`
+Journal technique : `~/Library/Application Support/PAAF/paaf.log`
 
 ## Développement
 
 ```
 src/ptsl_import_sequentiel.py   moteur PTSL + ligne de commande
 src/ptsl_import_gui.py          interface Tkinter
-macos/                          lanceur, Info.plist, icône du bundle
+src/aaf_inspect.py              lecture des AAF (pyaaf2) pour l'inspecteur
+src/assets/                     logo affiché dans l'interface
+macos/                          lanceur, Info.plist, icône du bundle, make_icon.py (logo)
 legacy/                         ancienne version AppleScript (GUI scripting)
-build.sh                        construit dist/Import Pro Tools.app et le zip
+build.sh                        construit dist/PAAF.app et le zip
 VERSION                         numéro de version (source unique)
 ```
 
@@ -46,15 +58,23 @@ Build local :
 
 ```
 ./build.sh
-open "dist/Import Pro Tools.app"
+open dist/PAAF.app
+```
+
+Interface depuis les sources :
+
+```
+python3 -m venv .venv && .venv/bin/pip install py-ptsl tkinterdnd2 pyaaf2
+.venv/bin/python src/ptsl_import_gui.py [fichiers ou dossiers]
 ```
 
 Ligne de commande (sans interface) :
 
 ```
-python3 -m venv .venv && .venv/bin/pip install py-ptsl
-.venv/bin/python src/ptsl_import_sequentiel.py --dry-run --mode fixe --start 01:00:00:00 --step 00:10:00:00 DOSSIER
+.venv/bin/python src/ptsl_import_sequentiel.py --dry-run --fps 25 --mode fixe --start 01:00:00:00 --step 00:10:00:00 DOSSIER
 ```
+
+Logo et icône : `.venv/bin/pip install pillow && .venv/bin/python macos/make_icon.py`.
 
 ## Publier une version
 

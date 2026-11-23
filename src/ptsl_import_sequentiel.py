@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Import séquentiel d'AAF / OMF et de vidéos dans Pro Tools via le PTSL
+PAAF — import séquentiel d'AAF / OMF et de vidéos dans Pro Tools via le PTSL
 (Pro Tools Scripting Library, API officielle Avid), sans GUI scripting.
 
 Prérequis
   - Pro Tools 2023.x ou plus récent, session ouverte (PTSL écoute sur localhost:31416)
-  - Python 3.9+  et  py-ptsl :   pip3 install py-ptsl
-  - Optionnel : ffprobe (ffmpeg) pour lire les durées vidéo en mode "bout"
+  - Python 3.9+  et  py-ptsl :   pip3 install py-ptsl   (pyaaf2 en option : aperçu des AAF)
+  - Recommandé : ffmpeg / ffprobe (audio des vidéos, durées, détection stéréo)
 
 Exemples
-  # Tout un dossier (AAF + vidéos qu'il contient, tri naturel)
+  # Tout un dossier (AAF + vidéos qu'il contient, tri naturel ; AAF et vidéo de même nom
+  # calés au même TC)
   python3 ptsl_import_sequentiel.py --mode fixe "/Volumes/MEDIA/THE BRIDGE S04/EP01"
 
   # Sélecteur de fichiers macOS, un point d'entrée toutes les 10 min à partir de 01:00:00:00
@@ -29,12 +30,14 @@ Exemples
 """
 
 import argparse
+import itertools
 import math
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -46,12 +49,17 @@ try:
 except ImportError:
     sys.exit("py-ptsl n'est pas installé :  pip3 install py-ptsl")
 
-
+APP_NAME = "PAAF"
+COMPANY = "Bernik"
 AAF_EXT = {".aaf", ".omf", ".omfi"}
 VIDEO_EXT = {".mov", ".mp4", ".m4v", ".mxf", ".avi"}
 
 
-# py-ptsl n'a pas (encore) de méthode pour ImportVideo : on déclare l'opération.
+def connect():
+    return open_engine(company_name=COMPANY, application_name=APP_NAME)
+
+
+# py-ptsl n'a pas (encore) de méthode pour ces commandes : on déclare les opérations.
 # La classe Operation déduit la commande et le corps de requête de son nom.
 class CId_ImportVideo(Operation):
     pass
@@ -106,6 +114,7 @@ class TC:
         return ((h * 3600 + m * 60 + s) * self.base) + f
 
     def to_tc(self, frames: int) -> str:
+        frames = max(0, int(frames))
         f = frames % self.base
         s_total = frames // self.base
         return f"{s_total // 3600:02d}:{(s_total // 60) % 60:02d}:{s_total % 60:02d}:{f:02d}"
@@ -115,6 +124,11 @@ class TC:
 
 def natural_key(path: Path):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", path.name)]
+
+
+def pair_key(path: Path) -> str:
+    """Clé de rapprochement AAF ↔ vidéo : nom sans extension, casse et séparateurs ignorés."""
+    return re.sub(r"[\s_\-.]+", "_", path.stem.strip().lower())
 
 
 def choose_files_macos():
@@ -136,6 +150,13 @@ def choose_files_macos():
 
 
 def media_duration_seconds(path: Path):
+    """Durée d'une vidéo (ffprobe / Spotlight) ou d'un AAF (pyaaf2)."""
+    if kind_of(path) == "aaf":
+        try:
+            import aaf_inspect
+            return aaf_inspect.inspect(path)["duration_s"]
+        except Exception:
+            return None
     if shutil.which("ffprobe"):
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -199,45 +220,107 @@ def read_csv_plan(csv_path: Path, tc: TC):
     return plan
 
 
+def link_groups(paths, enabled=True):
+    """Regroupe les fichiers qui partagent un point d'entrée : un AAF et une vidéo de même
+    nom. Renvoie une liste de groupes (listes d'indices), dans l'ordre d'apparition."""
+    groups, by_key = [], {}
+    for i, p in enumerate(paths):
+        key = pair_key(p) if enabled else None
+        g = by_key.get(key) if key else None
+        # on ne lie qu'un fichier de chaque type par groupe (AAF + vidéo)
+        if g is not None and kind_of(p) not in {kind_of(paths[j]) for j in g}:
+            g.append(i)
+        else:
+            g = [i]
+            groups.append(g)
+            if key:
+                by_key[key] = g
+    return groups
+
+
+def schedule(paths, mode, start, step, gap, real_fps, duration_of,
+             manual=None, link_same_name=True):
+    """Calcule les points d'entrée (en images).
+    mode : fixe | bout | manuel. manual : {indice: images} pour le mode manuel.
+    Renvoie (liste d'images par fichier, nb de durées inconnues, groupes)."""
+    groups = link_groups(paths, link_same_name)
+    frames = [0] * len(paths)
+    current = start
+    unknown = 0
+    manual = manual or {}
+    for g in groups:
+        if mode == "manuel":
+            fixed = [manual[i] for i in g if manual.get(i) is not None]
+            if fixed:
+                current = fixed[0]
+        for i in g:
+            frames[i] = current
+        if mode == "bout":
+            durs = [d for d in (duration_of(paths[i]) for i in g) if d is not None]
+            if durs:
+                current += math.ceil(max(durs) * real_fps) + gap
+            else:
+                unknown += 1
+                current += step
+        else:
+            current += step
+    return frames, unknown, groups
+
+
 def build_plan(files, args, tc: TC, real_fps: float):
     if args.csv:
         return read_csv_plan(Path(args.csv).expanduser(), tc)
 
-    files = sorted(files, key=natural_key) if not args.keep_order else files
-    current = tc.to_frames(args.start)
-    step = tc.to_frames(args.step)
-    gap = tc.to_frames(args.gap)
-    plan = []
-    for i, p in enumerate(files):
-        if args.mode == "interactif":
+    files = sorted(files, key=natural_key) if not args.keep_order else list(files)
+    link = not getattr(args, "no_link_names", False)
+    if args.mode == "interactif":
+        groups = link_groups(files, link)
+        frames = [0] * len(files)
+        current = tc.to_frames(args.start)
+        for g in groups:
             default = tc.to_tc(current)
+            names = " + ".join(files[i].name for i in g)
             while True:
-                answer = input(f"Point d'entrée pour {p.name} [{default}] : ").strip() or default
+                answer = input(f"Point d'entrée pour {names} [{default}] : ").strip() or default
                 try:
                     current = tc.to_frames(answer)
                     break
                 except ValueError as e:
                     print(f"  {e}")
-        plan.append((p, tc.to_tc(current)))
-
-        if args.mode == "bout":
-            dur = media_duration_seconds(p) if kind_of(p) == "video" else None
-            if dur is None:
-                print(f"  ! Durée inconnue pour {p.name} : réservation de {args.step}")
-                current += step
-            else:
-                current += math.ceil(dur * real_fps) + gap
-        else:
-            current += step
-    return plan
+            for i in g:
+                frames[i] = current
+            current += tc.to_frames(args.step)
+    else:
+        frames, unknown, _ = schedule(
+            files, args.mode, tc.to_frames(args.start), tc.to_frames(args.step),
+            tc.to_frames(args.gap), real_fps, media_duration_seconds, link_same_name=link)
+        if unknown:
+            print(f"  ! {unknown} durée(s) inconnue(s) : réservation de {args.step}")
+    return [(p, tc.to_tc(f)) for p, f in zip(files, frames)]
 
 
-# ------------------------------------------------------------------ imports
+# ------------------------------------------------------------------ PTSL : positions
+
+def spot_location(tc: str, legacy=False):
+    """Position de placement au TC. Pro Tools 2025+ attend le champ `location`
+    (TimelineLocation) ; les versions antérieures, location_value / location_options."""
+    if legacy or not hasattr(pt, "TimelineLocation"):
+        return pt.SpotLocationData(location_type=pt.Start, location_options=pt.TimeCode,
+                                   location_value=tc)
+    return pt.SpotLocationData(location_type=pt.Start,
+                               location=pt.TimelineLocation(location=tc, time_type=pt.TLType_TimeCode))
+
+
+def _is_location_error(e) -> bool:
+    return "location" in str(e).lower() and "incompatib" not in str(e).lower()
+
+
+# ------------------------------------------------------------------ PTSL : AAF
 
 def import_aaf(engine, path: Path, tc: str, args):
-    """Import Session Data d'un AAF/OMF : toutes les pistes en nouvelles pistes,
-    avec clips et médias (sans clips_and_media, Pro Tools crée des pistes vides),
-    gain de clip et automation de volume, calé sur le TC demandé."""
+    """Import Session Data d'un AAF/OMF : toutes les pistes (nouvelles pistes, ou fusion
+    avec les pistes de même nom de la session), avec clips et médias (sans clips_and_media,
+    Pro Tools crée des pistes vides), gain de clip et automation de volume, calé sur le TC."""
     if args.copy_audio:
         audio_opt = pt.CopyFromSourceAudio
     elif args.convert_audio:
@@ -251,7 +334,7 @@ def import_aaf(engine, path: Path, tc: str, args):
         audio_options=audio_opt,
         audio_handle_size=args.handles,
         video_options=pt.CopyFromSourceVideo if args.copy_video else pt.LinkToSourceVideo,
-        match_options=pt.MT_ImportAsNewTrack,
+        match_options=pt.MT_MatchTracks if getattr(args, "match_tracks", False) else pt.MT_ImportAsNewTrack,
         playlist_options=pt.ImportOverlayNewOnExistingPlaylists,
         track_data_to_import=pt.TrackDataToImport(
             clips_and_media=True,
@@ -269,6 +352,8 @@ def import_aaf(engine, path: Path, tc: str, args):
     )
     engine.client.run(op)
 
+
+# ------------------------------------------------------------------ session
 
 def hfs_to_posix(hfs: str) -> str:
     """'Macintosh HD:Users:x:Sess:Sess.ptx' -> '/Users/x/Sess/Sess.ptx' (ou /Volumes/...)."""
@@ -294,46 +379,11 @@ def audio_dest_candidates(engine):
     return [d for d in (posix_dir, hfs_dir) if d]
 
 
-def audio_channels(path: Path):
-    if shutil.which("ffprobe"):
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0",
-                            "-show_entries", "stream=channels", "-of", "csv=p=0", str(path)],
-                           capture_output=True, text=True)
-        try:
-            return int(r.stdout.strip().split()[0])
-        except (ValueError, IndexError):
-            pass
-    return None
-
-
-class VideoAudioState:
-    """Mémorise le dossier de destination, les pistes audio communes entre deux vidéos
-    et les extractions ffmpeg lancées en parallèle."""
-
-    def __init__(self, base_name: str):
-        self.base_name = base_name
-        self.dest_candidates = None
-        self.tracks = {}      # (nb_pistes, format) -> [noms]
-        self.futures = {}     # Path vidéo -> Future(extraction ffmpeg)
-        self.executor = None
-
-    def shutdown(self):
-        if self.executor:
-            self.executor.shutdown(wait=False, cancel_futures=True)
-            self.executor = None
-
-
-# ------------------------------------------------------------------ ffmpeg
-
 PCM_CODECS = {
     getattr(pt, "Bit16", None): ("pcm_s16le", "16 bits"),
     getattr(pt, "Bit24", None): ("pcm_s24le", "24 bits"),
     getattr(pt, "Bit32Float", None): ("pcm_f32le", "32 bits flottant"),
 }
-
-
-def ffmpeg_path():
-    return shutil.which("ffmpeg")
 
 
 def session_audio_format(engine):
@@ -359,6 +409,157 @@ def session_audio_format(engine):
             "interleaved": interleaved, "audio_dir": audio_dir}
 
 
+TRACK_FORMAT_LABEL = {getattr(pt, "TF_Mono", -1): "mono", getattr(pt, "TF_Stereo", -2): "stéréo"}
+
+
+def session_tracks(engine):
+    """Pistes de la session : [{name, type, format, has_clips, folder}]."""
+    out = []
+    for t in engine.track_list():
+        try:
+            tname = pt.TrackType.Name(t.type).replace("TT_", "")
+        except ValueError:
+            tname = str(t.type)
+        try:
+            fname = pt.TrackFormat.Name(t.format).replace("TF_", "")
+        except ValueError:
+            fname = ""
+        out.append({"name": t.name, "type": tname, "format": fname, "format_id": t.format,
+                    "type_id": t.type, "has_clips": bool(t.track_attributes.contains_clips),
+                    "folder": t.parent_folder_name or ""})
+    return out
+
+
+# ------------------------------------------------------------------ ffmpeg : analyse
+
+def ffmpeg_path():
+    return shutil.which("ffmpeg")
+
+
+def has_ffmpeg():
+    return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+
+def audio_streams(path: Path):
+    """[{index (parmi les flux audio), channels, layout, sr, codec}] via ffprobe."""
+    if not shutil.which("ffprobe"):
+        return None
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
+                        "-show_entries", "stream=channels,channel_layout,sample_rate,codec_name",
+                        "-of", "compact=p=0:nk=0", str(path)], capture_output=True, text=True)
+    streams = []
+    for n, line in enumerate(l for l in r.stdout.splitlines() if l.strip()):
+        d = dict(kv.split("=", 1) for kv in line.split("|") if "=" in kv)
+        try:
+            ch = int(d.get("channels") or 0)
+        except ValueError:
+            ch = 0
+        streams.append({"index": n, "channels": ch, "layout": d.get("channel_layout", ""),
+                        "sr": d.get("sample_rate", ""), "codec": d.get("codec_name", "")})
+    return streams
+
+
+def audio_channels(path: Path):
+    streams = audio_streams(path)
+    if streams:
+        return streams[0]["channels"] or None
+    return None
+
+
+SILENT_DB = -70.0
+DUAL_MONO_MARGIN_DB = 45.0
+_analysis_cache = {}
+_analysis_lock = threading.Lock()
+
+
+def _two_channel_input(streams):
+    """Graphe ffmpeg qui produit les 2 canaux d'une vidéo stéréo (1 flux stéréo ou 2 flux mono)."""
+    if len(streams) == 1:
+        return f"[0:a:{streams[0]['index']}]"
+    return f"[0:a:{streams[0]['index']}][0:a:{streams[1]['index']}]amerge=inputs=2,"
+
+
+def analyze_audio(path: Path, seconds=600):
+    """Décrit l'audio d'une vidéo. kind : none | mono | stereo | dual_mono | left | right |
+    silent | multi. Pour 2 canaux, compare G, D et G−D (crêtes) sur les `seconds` premières
+    secondes : canaux identiques -> dual_mono, un seul canal utile -> left / right."""
+    path = Path(path)
+    try:
+        st = path.stat()
+    except OSError:
+        return {"kind": "none", "streams": [], "channels": 0, "label": "introuvable"}
+    key = (str(path), st.st_mtime, st.st_size)
+    with _analysis_lock:
+        if key in _analysis_cache:
+            return _analysis_cache[key]
+
+    if not shutil.which("ffprobe"):
+        return {"kind": "none", "streams": [], "channels": 0, "peaks": None, "label": "ffprobe absent"}
+    streams = [s for s in (audio_streams(path) or []) if s["channels"] > 0]
+    total = sum(s["channels"] for s in streams)
+    res = {"kind": "none", "streams": streams, "channels": total, "peaks": None}
+    if total == 0:
+        res["label"] = "pas d'audio"
+    elif total == 1:
+        res["kind"], res["label"] = "mono", "mono"
+    elif total == 2 and (len(streams) == 1 or all(s["channels"] == 1 for s in streams)) and ffmpeg_path():
+        graph = (_two_channel_input(streams) +
+                 "pan=3c|c0=c0|c1=c1|c2=c0-c1,astats=measure_perchannel=Peak_level:measure_overall=none")
+        cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-nostats", "-vn", "-sn", "-dn",
+               "-t", str(seconds), "-i", str(path), "-filter_complex", graph, "-f", "null", "-"]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        peaks = []
+        for m in re.finditer(r"Peak level dB:\s*(-?inf|-?[\d.]+)", r.stderr):
+            v = m.group(1)
+            peaks.append(-200.0 if "inf" in v else float(v))
+        if len(peaks) >= 3:
+            left, right, diff = peaks[:3]
+            res["peaks"] = (left, right, diff)
+            loud = max(left, right)
+            if loud < SILENT_DB:
+                res["kind"], res["label"] = "silent", "2 can. silencieux"
+            elif right < SILENT_DB:
+                res["kind"], res["label"] = "left", "stéréo, gauche seule"
+            elif left < SILENT_DB:
+                res["kind"], res["label"] = "right", "stéréo, droite seule"
+            elif diff <= loud - DUAL_MONO_MARGIN_DB:
+                res["kind"], res["label"] = "dual_mono", "double mono (G = D)"
+            else:
+                res["kind"], res["label"] = "stereo", "stéréo"
+        else:
+            res["kind"], res["label"] = "stereo", "stéréo (non analysée)"
+    elif total == 2:
+        res["kind"], res["label"] = "stereo", "stéréo"
+    else:
+        res["kind"] = "multi"
+        layout = streams[0]["layout"] if len(streams) == 1 else f"{len(streams)} flux"
+        res["label"] = f"{total} canaux ({layout})" if layout else f"{total} canaux"
+    with _analysis_lock:
+        _analysis_cache[key] = res
+    return res
+
+
+def audio_layout(analysis, fmt, stereo_detect=True):
+    """Choisit ce qu'on extrait : (layout, sources) avec layout mono | stereo | split et
+    sources = [(indice du flux audio, canal)]."""
+    streams = analysis["streams"]
+    chans = [(s["index"], c) for s in streams for c in range(s["channels"])]
+    kind = analysis["kind"]
+    if not chans:
+        raise RuntimeError("aucune piste audio dans la vidéo")
+    if len(chans) == 1:
+        return "mono", chans
+    if len(chans) == 2:
+        if stereo_detect and kind in ("dual_mono", "left", "silent"):
+            return "mono", [chans[0]]
+        if stereo_detect and kind == "right":
+            return "mono", [chans[1]]
+        return ("stereo", chans) if fmt["interleaved"] else ("split", chans)
+    return "split", chans
+
+
+# ------------------------------------------------------------------ ffmpeg : extraction
+
 def _unique(path: Path) -> Path:
     if not path.exists():
         return path
@@ -370,36 +571,126 @@ def _unique(path: Path) -> Path:
         i += 1
 
 
-def extract_audio_ffmpeg(path: Path, fmt: dict):
-    """Extrait la 1re piste audio de la vidéo en WAV au format de la session.
-    Mono/stéréo entrelacé -> 1 fichier ; plus de 2 canaux (ou session non entrelacée)
-    -> 1 fichier mono par canal. Renvoie (liste de fichiers, nb de canaux)."""
-    ch = audio_channels(path)
-    if not ch:
-        raise RuntimeError("aucune piste audio détectée (ffprobe)")
+def _reusable(wav: Path, video: Path, fmt, channels: int) -> bool:
+    """Un WAV déjà extrait (lancement précédent) est réutilisé s'il est plus récent que la
+    vidéo et au bon format."""
+    try:
+        if not wav.exists() or wav.stat().st_size < 1024 or wav.stat().st_mtime < video.stat().st_mtime:
+            return False
+    except OSError:
+        return False
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                        "stream=codec_name,sample_rate,channels", "-of", "compact=p=0:nk=0", str(wav)],
+                       capture_output=True, text=True)
+    d = dict(kv.split("=", 1) for kv in r.stdout.strip().split("|") if "=" in kv)
+    return (d.get("codec_name") == fmt["codec"] and d.get("sample_rate") == str(fmt["sr"])
+            and d.get("channels") == str(channels))
+
+
+def extract_audio_ffmpeg(path: Path, fmt: dict, stereo_detect=True):
+    """Extrait l'audio de la vidéo en WAV BWF au format de la session, dans Audio Files.
+    Renvoie (fichiers, layout, libellé). layout : mono | stereo | split (un mono par canal)."""
+    analysis = analyze_audio(path)
+    layout, sources = audio_layout(analysis, fmt, stereo_detect)
     out_dir = fmt["audio_dir"]
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = re.sub(r"[^\w\-. ]", "_", path.stem)
-    base = ["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", "-i", str(path)]
-    common = ["-vn", "-c:a", fmt["codec"], "-ar", str(fmt["sr"]), "-rf64", "auto", "-write_bext", "1"]
+    common = ["-c:a", fmt["codec"], "-ar", str(fmt["sr"]), "-rf64", "auto", "-write_bext", "1", "-f", "wav"]
 
-    if ch <= 2 and fmt["interleaved"]:
-        out = _unique(out_dir / f"{stem}.wav")
-        cmd = base + ["-map", "0:a:0"] + common + [str(out)]
-        outputs = [out]
+    if layout in ("mono", "stereo"):
+        names = [f"{stem}.wav"]
+        n_ch = [1 if layout == "mono" else 2]
     else:
-        outputs, cmd = [], list(base)
-        for i in range(ch):
-            out = _unique(out_dir / f"{stem}.A{i + 1}.wav")
-            cmd += ["-map", "0:a:0", "-af", f"pan=mono|c0=c{i}"] + common + [str(out)]
-            outputs.append(out)
+        names = [f"{stem}.A{i + 1}.wav" for i in range(len(sources))]
+        n_ch = [1] * len(sources)
+
+    finals = [out_dir / n for n in names]
+    if all(_reusable(f, path, fmt, c) for f, c in zip(finals, n_ch)):
+        return finals, layout, analysis.get("label", "") + " — déjà converti"
+    finals = [_unique(f) for f in finals]
+    if len(set(finals)) != len(finals):
+        raise RuntimeError("noms de fichiers en conflit")
+    parts = [f.with_name("." + f.name + ".part") for f in finals]
+
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", "-vn", "-sn", "-dn", "-i", str(path)]
+    stream_ch = {s["index"]: s["channels"] for s in analysis["streams"]}
+    if layout == "stereo":
+        if len({s for s, _ in sources}) == 1:
+            cmd += ["-map", f"0:a:{sources[0][0]}"]
+        else:
+            cmd += ["-filter_complex", f"[0:a:{sources[0][0]}][0:a:{sources[1][0]}]amerge=inputs=2[st]",
+                    "-map", "[st]"]
+        cmd += common + [str(parts[0])]
+    else:
+        for (s, c), part in zip(sources, parts):
+            cmd += ["-map", f"0:a:{s}"]
+            if stream_ch.get(s, 1) > 1:
+                cmd += ["-af", f"pan=mono|c0=c{c}"]
+            cmd += common + [str(part)]
 
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
-        for o in outputs:
+        for o in parts:
             o.unlink(missing_ok=True)
         raise RuntimeError("ffmpeg : " + (r.stderr.strip().splitlines() or ["erreur"])[-1])
-    return outputs, ch
+    for part, final in zip(parts, finals):
+        os.replace(part, final)
+    return finals, layout, analysis.get("label", "")
+
+
+class AudioPrep:
+    """Extractions ffmpeg en tâche de fond, au format d'une session. Peut être lancé dès
+    l'ajout des vidéos (préconversion) et réutilisé au moment de l'import."""
+
+    def __init__(self, fmt, stereo_detect=True, workers=None):
+        self.fmt = fmt
+        self.stereo_detect = stereo_detect
+        workers = workers or max(1, min(4, (os.cpu_count() or 2) // 2))
+        self.workers = workers
+        self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="paaf-ffmpeg")
+        self.futures = {}
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def make_key(fmt, stereo_detect):
+        return (fmt["sr"], fmt["codec"], fmt["interleaved"], str(fmt["audio_dir"]), bool(stereo_detect))
+
+    def key(self):
+        return self.make_key(self.fmt, self.stereo_detect)
+
+    def submit(self, path: Path):
+        with self.lock:
+            fut = self.futures.get(path)
+            if fut is None or (fut.done() and fut.exception() is not None):
+                fut = self.executor.submit(extract_audio_ffmpeg, path, self.fmt, self.stereo_detect)
+                self.futures[path] = fut
+            return fut
+
+    def status(self, path: Path):
+        fut = self.futures.get(path)
+        if fut is None:
+            return None
+        if not fut.done():
+            return "…"
+        return "erreur" if fut.exception() else "prêt"
+
+    def shutdown(self):
+        self.executor.shutdown(wait=False, cancel_futures=True)
+
+
+class VideoAudioState:
+    """Pistes audio communes entre deux vidéos et extractions ffmpeg en cours."""
+
+    def __init__(self, base_name: str, prep: AudioPrep = None):
+        self.base_name = base_name
+        self.dest_candidates = None
+        self.tracks = {}      # (nb_pistes, format) -> [noms]
+        self.prep = prep
+        self.own_prep = False
+
+    def shutdown(self):
+        if self.prep and self.own_prep:
+            self.prep.shutdown()
 
 
 def start_audio_extraction(engine, plan, args, state):
@@ -410,47 +701,103 @@ def start_audio_extraction(engine, plan, args, state):
     videos = [p for p, _ in plan if kind_of(p) == "video" and p.exists()]
     if not videos:
         return
-    if not (ffmpeg_path() and shutil.which("ffprobe")):
+    if not has_ffmpeg():
         print("  ffmpeg/ffprobe introuvables : extraction de l'audio par Pro Tools (plus lent)")
         return
     fmt = session_audio_format(engine)
     if fmt["audio_dir"] is None:
         print("  Dossier Audio Files introuvable : extraction de l'audio par Pro Tools")
         return
-    workers = max(1, min(4, (os.cpu_count() or 2) // 2))
-    state.executor = ThreadPoolExecutor(max_workers=workers)
+    detect = not getattr(args, "no_stereo_detect", False)
+    if state.prep is None or state.prep.key() != AudioPrep.make_key(fmt, detect):
+        state.prep = AudioPrep(fmt, detect)
+        state.own_prep = True
     for p in videos:
-        state.futures[p] = state.executor.submit(extract_audio_ffmpeg, p, fmt)
-    print(f"  ffmpeg : extraction de {len(videos)} audio(s) en parallèle "
-          f"({fmt['sr']} Hz / {fmt['label']}, {workers} à la fois) vers {fmt['audio_dir']}")
+        state.prep.submit(p)
+    print(f"  ffmpeg : audio de {len(videos)} vidéo(s) au format de la session "
+          f"({fmt['sr']} Hz / {fmt['label']}, {state.prep.workers} à la fois) vers {fmt['audio_dir']}")
 
+
+# ------------------------------------------------------------------ PTSL : pistes et clips
 
 def ensure_audio_tracks(engine, state, n_tracks: int, fmt):
+    """Pistes audio communes au format demandé (mono / stéréo). Une piste existante de même
+    nom mais d'un autre format n'est jamais utilisée (Pro Tools refuserait les clips)."""
     key = (n_tracks, fmt)
     if key in state.tracks:
         return state.tracks[key]
-    names = [state.base_name] if n_tracks == 1 else [f"{state.base_name} {i}" for i in range(1, n_tracks + 1)]
-    existing = {t.name for t in engine.track_list()}
+    base = state.base_name
+    if n_tracks == 1:
+        names = [base] if fmt == pt.TF_Stereo else [f"{base} MONO"]
+    else:
+        names = [f"{base} {i}" for i in range(1, n_tracks + 1)]
+    tracks = {t.name: t for t in engine.track_list()}
+
+    def usable(name):
+        t = tracks.get(name)
+        return t is not None and t.type == pt.TT_Audio and t.format == fmt
+
     result = []
     for name in names:
-        if name in existing:
-            result.append(name)
+        candidate, n = name, 2
+        while candidate in tracks and not usable(candidate):
+            candidate = f"{name} ({n})"
+            n += 1
+        if usable(candidate):
+            result.append(candidate)
             continue
         op = ops.CId_CreateNewTracks(
-            number_of_tracks=1, track_name=name, track_format=fmt,
+            number_of_tracks=1, track_name=candidate, track_format=fmt,
             track_type=pt.TT_Audio, track_timebase=pt.TTB_Samples,
             insertion_point_position=pt.TIPoint_Last,
         )
         engine.client.run(op)
         created = list(getattr(op.response, "created_track_names", []) or [])
-        result.append(created[0] if created else name)
-        print(f"    + piste créée : {result[-1]}")
+        result.append(created[0] if created else candidate)
+        print(f"    + piste créée : {result[-1]} ({TRACK_FORMAT_LABEL.get(fmt, '')})")
     state.tracks[key] = result
     return result
 
 
+def spot_clip(engine, clip_ids, track: str, tc: str):
+    if isinstance(clip_ids, str):
+        clip_ids = [clip_ids]
+    last = None
+    for legacy in (False, True):
+        op = CId_SpotClipsByID(src_clips=list(clip_ids), dst_track_name=track,
+                               dst_location_data=spot_location(tc, legacy))
+        try:
+            engine.client.run(op)
+            return
+        except CommandError as e:
+            last = e
+            if not _is_location_error(e) or not hasattr(pt, "TimelineLocation"):
+                raise
+    raise last
+
+
+def spot_group(engine, ids, track: str, tc: str, channels=1):
+    """Place un fichier sur une piste. Pro Tools renvoie un clip par canal (G, D) et parfois
+    un clip de groupe : on essaie l'ensemble, puis chaque combinaison de `channels` clips."""
+    ids = list(ids)
+    attempts = [ids]
+    if len(ids) > channels:
+        attempts += [list(c) for c in itertools.combinations(ids, channels)]
+    if channels > 1:
+        attempts += [[i] for i in ids]
+    last_error = None
+    for attempt in attempts:
+        try:
+            spot_clip(engine, attempt, track, tc)
+            return
+        except CommandError as e:
+            last_error = e
+    raise last_error
+
+
 def import_audio_to_clip_list(engine, path: Path, state):
-    """Extrait l'audio du fichier vidéo dans la Clip List. Renvoie un clip par fichier audio créé."""
+    """Extrait l'audio du fichier vidéo dans la Clip List. Renvoie un groupe de clips par
+    fichier audio créé."""
     if state.dest_candidates is None:
         state.dest_candidates = audio_dest_candidates(engine)
     last_error = None
@@ -474,33 +821,6 @@ def import_audio_to_clip_list(engine, path: Path, state):
         if not groups:
             raise RuntimeError("aucun audio extrait du fichier vidéo")
         return groups
-    raise last_error
-
-
-def spot_clip(engine, clip_ids, track: str, tc: str):
-    if isinstance(clip_ids, str):
-        clip_ids = [clip_ids]
-    op = CId_SpotClipsByID(
-        src_clips=list(clip_ids),
-        dst_track_name=track,
-        dst_location_data=pt.SpotLocationData(location_type=pt.Start,
-                                              location_options=pt.TimeCode,
-                                              location_value=tc),
-    )
-    engine.client.run(op)
-
-
-def spot_group(engine, ids, track: str, tc: str):
-    """Place un fichier sur une piste : d'abord tous ses clips ensemble, puis chaque
-    clip seul (Pro Tools ne dit pas lequel correspond au format de la piste)."""
-    attempts = [list(ids)] + ([[i] for i in ids] if len(ids) > 1 else [])
-    last_error = None
-    for attempt in attempts:
-        try:
-            spot_clip(engine, attempt, track, tc)
-            return
-        except CommandError as e:
-            last_error = e
     raise last_error
 
 
@@ -534,47 +854,52 @@ def import_wav_files(engine, files, operations=(pt.AddAudio, pt.CopyAudio)):
     raise last_error
 
 
-def place_clips(engine, groups, channels, tc, state):
-    """groups : une liste de clips par fichier audio."""
-    if len(groups) == 1:
-        if channels > 2:
-            raise RuntimeError(f"audio {channels} canaux entrelacé non géré (mono ou stéréo uniquement)")
-        tracks = ensure_audio_tracks(engine, state, 1, pt.TF_Mono if channels == 1 else pt.TF_Stereo)
-        spot_group(engine, groups[0], tracks[0], tc)
+def place_clips(engine, groups, layout, tc, state):
+    """groups : une liste de clips par fichier audio ; layout : mono | stereo | split."""
+    if layout in ("mono", "stereo"):
+        fmt = pt.TF_Mono if layout == "mono" else pt.TF_Stereo
+        track = ensure_audio_tracks(engine, state, 1, fmt)[0]
+        spot_group(engine, groups[0], track, tc, 1 if layout == "mono" else 2)
+        print(f"    audio {'mono' if layout == 'mono' else 'stéréo'} -> {track}")
     else:
         # un fichier mono par canal : une piste mono par canal, toujours les mêmes
         tracks = ensure_audio_tracks(engine, state, len(groups), pt.TF_Mono)
         for ids, track in zip(groups, tracks):
-            spot_group(engine, ids, track, tc)
+            spot_group(engine, ids, track, tc, 1)
+        print(f"    audio {len(groups)} × mono -> {', '.join(tracks)}")
 
 
 def import_video_audio(engine, path: Path, tc: str, state):
-    future = state.futures.pop(path, None)
-    if future is not None:
+    fut = state.prep.submit(path) if state.prep else None
+    if fut is not None:
         try:
-            files, ch = future.result()
+            files, layout, label = fut.result()
+            print(f"    audio : {label}")
         except Exception as e:
             print(f"  ! ffmpeg : {e}")
             files = None
         if files:
             strategies = [((pt.AddAudio, pt.CopyAudio), "WAV ajouté tel quel"),
                           ((pt.ConvertAudio,), "WAV converti par Pro Tools")]
-            for n, (operations, label) in enumerate(strategies):
+            for n, (operations, slabel) in enumerate(strategies):
                 groups = []
                 try:
                     groups = import_wav_files(engine, files, operations)
-                    place_clips(engine, groups, ch, tc, state)
+                    place_clips(engine, groups, layout, tc, state)
                     if n:
-                        print(f"    (audio placé via : {label})")
+                        print(f"    (audio placé via : {slabel})")
                     return
                 except Exception as e:
                     detail = f" | clips par fichier : {[len(g) for g in groups]}" if groups else ""
-                    print(f"  ! {label} : {e}{detail}")
+                    print(f"  ! {slabel} : {e}{detail}")
     # dernier recours : extraction et conversion par Pro Tools depuis la vidéo
     print("    extraction de l'audio par Pro Tools…")
     groups = import_audio_to_clip_list(engine, path, state)
-    ch = (audio_channels(path) or 2) if len(groups) == 1 else 1
-    place_clips(engine, groups, ch, tc, state)
+    if len(groups) == 1:
+        layout = "mono" if (audio_channels(path) or 2) == 1 else "stereo"
+    else:
+        layout = "split"
+    place_clips(engine, groups, layout, tc, state)
 
 
 def has_video_track(engine) -> bool:
@@ -586,29 +911,36 @@ def has_video_track(engine) -> bool:
 
 def import_video(engine, path: Path, tc: str, args, state):
     # 1) image seule sur la piste vidéo, spottée au TC
-    location = pt.SpotLocationData(location_type=pt.Start, location_options=pt.TimeCode,
-                                   location_value=tc)
     if args.new_video_track or not has_video_track(engine):
         destination = pt.MD_NewTrack  # aucune piste vidéo : la première importée devient la principale
     else:
         destination = pt.MD_MainVideoTrack
 
-    def run(dest):
+    def run(dest, legacy):
         o = CId_ImportVideo(
             video_file_list=[str(path)],
             destination=dest,
             location=pt.ML_Spot,
-            spot_location_data=location,
+            spot_location_data=spot_location(tc, legacy),
             import_audio_from_file=False,
         )
         engine.client.run(o)
         return o
 
+    def run_any_location(dest):
+        # l'ancien format de position fonctionne pour ImportVideo ; le nouveau en secours
+        try:
+            return run(dest, True)
+        except CommandError as e:
+            if _is_location_error(e) and hasattr(pt, "TimelineLocation"):
+                return run(dest, False)
+            raise
+
     try:
-        op = run(destination)
+        op = run_any_location(destination)
     except CommandError as e:
         if destination == pt.MD_MainVideoTrack and "NoVideoTrack" in str(e):
-            op = run(pt.MD_NewTrack)
+            op = run_any_location(pt.MD_NewTrack)
         else:
             raise
     failures = list(getattr(op.response, "failure_list", []) or [])
@@ -620,10 +952,22 @@ def import_video(engine, path: Path, tc: str, args, state):
         import_video_audio(engine, path, tc, state)
 
 
+def import_one(engine, path: Path, tc: str, args, state):
+    if not path.exists():
+        raise FileNotFoundError("fichier introuvable")
+    k = kind_of(path)
+    if k == "aaf":
+        import_aaf(engine, path, tc, args)
+    elif k == "video":
+        import_video(engine, path, tc, args, state)
+    else:
+        raise ValueError(f"extension non gérée : {path.suffix}")
+
+
 # ------------------------------------------------------------------ main
 
 def main():
-    ap = argparse.ArgumentParser(description="Import séquentiel AAF/vidéo dans Pro Tools via PTSL")
+    ap = argparse.ArgumentParser(description="PAAF — import séquentiel AAF/vidéo dans Pro Tools via PTSL")
     ap.add_argument("files", nargs="*", type=Path,
                     help="fichiers et/ou dossiers à importer (sinon sélecteur macOS)")
     ap.add_argument("-r", "--recursive", action="store_true", help="parcourir aussi les sous-dossiers")
@@ -635,11 +979,15 @@ def main():
                     help="espacement entre points d'entrée (mode fixe) ou durée réservée si inconnue (mode bout)")
     ap.add_argument("--gap", default="00:00:10:00", help="blanc entre deux médias (mode bout)")
     ap.add_argument("--keep-order", action="store_true", help="garder l'ordre donné au lieu du tri naturel")
+    ap.add_argument("--no-link-names", action="store_true",
+                    help="ne pas caler au même TC un AAF et une vidéo de même nom")
     ap.add_argument("--copy-audio", action="store_true", help="AAF : copier l'audio dans la session (défaut : lien)")
     ap.add_argument("--convert-audio", action="store_true",
                     help="AAF : convertir l'audio au format de la session (fréquence/résolution différentes)")
     ap.add_argument("--consolidate", action="store_true", help="AAF : consolider l'audio (avec --handles)")
     ap.add_argument("--handles", type=int, default=1000, help="AAF : poignées en ms pour la consolidation")
+    ap.add_argument("--match-tracks", action="store_true",
+                    help="AAF : importer dans les pistes de même nom de la session (Match Tracks)")
     ap.add_argument("--no-clip-gain", action="store_true", help="AAF : ne pas importer le gain de clip")
     ap.add_argument("--no-volume-automation", action="store_true", help="AAF : ne pas importer l'automation de volume")
     ap.add_argument("--copy-video", action="store_true", help="AAF : copier la vidéo référencée (défaut : lien)")
@@ -649,9 +997,11 @@ def main():
                     help="vidéo : ne PAS importer l'audio contenu dans le fichier (importé par défaut)")
     ap.add_argument("--no-ffmpeg", action="store_true",
                     help="vidéo : laisser Pro Tools extraire l'audio (au lieu de ffmpeg, plus rapide)")
+    ap.add_argument("--no-stereo-detect", action="store_true",
+                    help="vidéo : garder en stéréo les audios à canaux identiques (double mono)")
     ap.add_argument("--audio-track", default="AUDIO VIDEO",
-                    help="vidéo : nom de la piste audio commune (créée si absente ; "
-                         "« NOM 1 », « NOM 2 »… si l'audio est éclaté en mono)")
+                    help="vidéo : nom de la piste audio commune (créée si absente ; « NOM MONO » "
+                         "pour le mono, « NOM 1 », « NOM 2 »… si l'audio est éclaté en mono)")
     ap.add_argument("--fps", type=int, help="base TC forcée (utile avec --dry-run sans Pro Tools)")
     ap.add_argument("--dry-run", action="store_true", help="afficher le plan sans importer")
     ap.add_argument("-y", "--yes", action="store_true", help="ne pas demander de confirmation")
@@ -663,7 +1013,7 @@ def main():
         sys.exit("Aucun fichier à importer.")
 
     offline = args.dry_run and args.fps
-    engine_cm = None if offline else open_engine(company_name="Bernik", application_name="Import sequentiel")
+    engine_cm = None if offline else connect()
     engine = None
     try:
         if engine_cm:
@@ -699,16 +1049,8 @@ def main():
         video_state = VideoAudioState(args.audio_track)
         start_audio_extraction(engine, plan, args, video_state)
         for p, t in plan:
-            k = kind_of(p)
             try:
-                if not p.exists():
-                    raise FileNotFoundError("fichier introuvable")
-                if k == "aaf":
-                    import_aaf(engine, p, t, args)
-                elif k == "video":
-                    import_video(engine, p, t, args, video_state)
-                else:
-                    raise ValueError(f"extension non gérée : {p.suffix}")
+                import_one(engine, p, t, args, video_state)
                 report.append(f"✓ {t}  {p.name}")
                 print(report[-1])
             except (CommandError, RuntimeError, ValueError, FileNotFoundError) as e:

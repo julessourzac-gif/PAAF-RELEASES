@@ -1,37 +1,42 @@
 #!/bin/bash
-# Lanceur auto-installant d'Import Pro Tools.
-# Au premier lancement (ou après une mise à jour) : crée l'environnement Python dans
-# ~/Library/Application Support/Import Pro Tools et installe les dépendances.
+# Lanceur auto-installant de PAAF.
+# Au premier lancement (ou après une mise à jour des dépendances) : crée l'environnement Python
+# dans ~/Library/Application Support/PAAF et installe les dépendances.
 
 APP_VERSION="@VERSION@"
-DEPS_VERSION="1"   # à incrémenter seulement si les bibliothèques changent
+DEPS_VERSION="2"   # à incrémenter seulement si les bibliothèques changent
 RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
-SUPPORT="$HOME/Library/Application Support/Import Pro Tools"
+SUPPORT="$HOME/Library/Application Support/PAAF"
+OLD_SUPPORT="$HOME/Library/Application Support/Import Pro Tools"
 VENV="$SUPPORT/env"
-LOG="$SUPPORT/ptimport.log"
+LOG="$SUPPORT/paaf.log"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
+# Ancien nom de l'application (Import Pro Tools) : on reprend son dossier (journal, réglages)
+if [ ! -d "$SUPPORT" ] && [ -d "$OLD_SUPPORT" ]; then
+  mv "$OLD_SUPPORT" "$SUPPORT" 2>/dev/null
+fi
 mkdir -p "$SUPPORT"
 # journal limité aux ~2000 dernières lignes
 [ -f "$LOG" ] && tail -n 2000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 exec >>"$LOG" 2>&1
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') — Import Pro Tools v$APP_VERSION"
+echo "=== $(date '+%Y-%m-%d %H:%M:%S') — PAAF v$APP_VERSION"
 
 ask() {  # $1 message, $2 bouton de validation -> 0 si validé
   osascript - "$1" "$2" <<'OSA' >/dev/null 2>&1
 on run argv
-  display dialog (item 1 of argv) with title "Import Pro Tools" buttons {"Annuler", item 2 of argv} default button 2 cancel button 1 with icon note
+  display dialog (item 1 of argv) with title "PAAF" buttons {"Annuler", item 2 of argv} default button 2 cancel button 1 with icon note
 end run
 OSA
 }
 alert() {
   osascript - "$1" <<'OSA' >/dev/null 2>&1
 on run argv
-  display alert "Import Pro Tools" message (item 1 of argv) as critical
+  display alert "PAAF" message (item 1 of argv) as critical
 end run
 OSA
 }
-notify() { osascript -e "display notification \"$1\" with title \"Import Pro Tools\"" >/dev/null 2>&1; }
+notify() { osascript -e "display notification \"$1\" with title \"PAAF\"" >/dev/null 2>&1; }
 fail() { echo "ERREUR : $1"; alert "$1
 
 Journal : $LOG"; exit 1; }
@@ -57,7 +62,7 @@ if [ ! -f "$STAMP" ] || ! "$VENV/bin/python" -c "pass" 2>/dev/null; then
   notify "Première installation : préparation (1 à 2 min)…"
   rm -rf "$VENV"
   "$PY" -m venv "$VENV" || fail "Impossible de créer l'environnement Python."
-  "$VENV/bin/pip" install -q --upgrade pip py-ptsl tkinterdnd2 \
+  "$VENV/bin/pip" install -q --upgrade pip py-ptsl tkinterdnd2 pyaaf2 \
     || fail "Échec de l'installation des bibliothèques (connexion Internet ?)."
   touch "$STAMP"
 fi

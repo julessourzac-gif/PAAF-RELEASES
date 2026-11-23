@@ -1,0 +1,90 @@
+#!/bin/bash
+# Lanceur auto-installant d'Import Pro Tools.
+# Au premier lancement (ou après une mise à jour) : crée l'environnement Python dans
+# ~/Library/Application Support/Import Pro Tools et installe les dépendances.
+
+APP_VERSION="@VERSION@"
+DEPS_VERSION="1"   # à incrémenter seulement si les bibliothèques changent
+RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
+SUPPORT="$HOME/Library/Application Support/Import Pro Tools"
+VENV="$SUPPORT/env"
+LOG="$SUPPORT/ptimport.log"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+mkdir -p "$SUPPORT"
+# journal limité aux ~2000 dernières lignes
+[ -f "$LOG" ] && tail -n 2000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+exec >>"$LOG" 2>&1
+echo "=== $(date '+%Y-%m-%d %H:%M:%S') — Import Pro Tools v$APP_VERSION"
+
+ask() {  # $1 message, $2 bouton de validation -> 0 si validé
+  osascript - "$1" "$2" <<'OSA' >/dev/null 2>&1
+on run argv
+  display dialog (item 1 of argv) with title "Import Pro Tools" buttons {"Annuler", item 2 of argv} default button 2 cancel button 1 with icon note
+end run
+OSA
+}
+alert() {
+  osascript - "$1" <<'OSA' >/dev/null 2>&1
+on run argv
+  display alert "Import Pro Tools" message (item 1 of argv) as critical
+end run
+OSA
+}
+notify() { osascript -e "display notification \"$1\" with title \"Import Pro Tools\"" >/dev/null 2>&1; }
+fail() { echo "ERREUR : $1"; alert "$1
+
+Journal : $LOG"; exit 1; }
+have_brew() { command -v brew >/dev/null 2>&1; }
+
+# 1) Python 3 (Homebrew de préférence)
+PY=""
+for c in /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+  [ -x "$c" ] && PY="$c" && break
+done
+if [ -z "$PY" ]; then
+  have_brew || fail "Homebrew est nécessaire. Installe-le depuis https://brew.sh puis relance l'application."
+  ask "Python 3 doit être installé via Homebrew (quelques minutes). Continuer ?" "Installer" || exit 0
+  notify "Installation de Python…"
+  brew install python || fail "Échec de l'installation de Python."
+  PY="$(brew --prefix)/bin/python3"
+fi
+echo "Python : $PY ($("$PY" --version 2>&1))"
+
+# 2) Environnement + bibliothèques (refait si version de l'app ou Python changé)
+STAMP="$VENV/.installed-deps-$DEPS_VERSION"
+if [ ! -f "$STAMP" ] || ! "$VENV/bin/python" -c "pass" 2>/dev/null; then
+  notify "Première installation : préparation (1 à 2 min)…"
+  rm -rf "$VENV"
+  "$PY" -m venv "$VENV" || fail "Impossible de créer l'environnement Python."
+  "$VENV/bin/pip" install -q --upgrade pip py-ptsl tkinterdnd2 \
+    || fail "Échec de l'installation des bibliothèques (connexion Internet ?)."
+  touch "$STAMP"
+fi
+
+# 3) Tkinter (interface graphique)
+if ! "$VENV/bin/python" -c "import tkinter; tkinter.Tcl()" 2>/dev/null; then
+  PYV=$("$VENV/bin/python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
+  have_brew || fail "Le module Tkinter manque et Homebrew est introuvable."
+  ask "Le module d'interface graphique (python-tk@$PYV) doit être installé via Homebrew. Continuer ?" "Installer" || exit 0
+  notify "Installation de l'interface graphique…"
+  brew install "python-tk@$PYV" || fail "Échec de l'installation de python-tk@$PYV."
+  "$VENV/bin/python" -c "import tkinter; tkinter.Tcl()" || fail "Tkinter reste indisponible."
+fi
+
+# 4) ffmpeg (facultatif mais recommandé)
+if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+  if [ ! -f "$SUPPORT/.ffmpeg-refuse" ] && have_brew; then
+    if ask "ffmpeg accélère fortement l'import de l'audio des vidéos. L'installer via Homebrew (quelques minutes) ?" "Installer"; then
+      notify "Installation de ffmpeg…"
+      brew install ffmpeg || alert "Échec de l'installation de ffmpeg : l'audio sera extrait par Pro Tools."
+    else
+      touch "$SUPPORT/.ffmpeg-refuse"
+    fi
+  fi
+fi
+
+# 5) Vérification puis lancement de l'interface
+"$VENV/bin/python" -c "import tkinter, ptsl" || fail "Les bibliothèques ne se chargent pas."
+cd "$RES"
+exec "$VENV/bin/python" "$RES/ptsl_import_gui.py"

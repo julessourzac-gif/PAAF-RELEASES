@@ -1,0 +1,23 @@
+IMPORT PRO TOOLS — installation
+================================
+
+1. Double-cliquer sur le .zip (déjà fait si vous lisez ceci).
+2. Glisser « Import Pro Tools » dans le dossier Applications.
+3. Premier lancement : clic droit sur l'app > Ouvrir.
+   Si macOS bloque l'ouverture (« développeur non identifié ») :
+     Réglages Système > Confidentialité et sécurité > « Ouvrir quand même »
+   ou, dans le Terminal :
+     xattr -dr com.apple.quarantine "/Applications/Import Pro Tools.app"
+4. Au premier lancement, l'app prépare son environnement (1 à 2 min, connexion
+   Internet requise) et propose d'installer via Homebrew ce qui manque :
+   Tkinter (interface) et ffmpeg (extraction rapide de l'audio des vidéos).
+
+Prérequis : macOS 11+, Homebrew (https://brew.sh), Pro Tools 2023 ou plus récent.
+
+Utilisation : ouvrir la session dans Pro Tools, lancer l'app, glisser les AAF /
+vidéos (ou dossiers) depuis le Finder, choisir le placement, « Importer ».
+
+Journal technique :
+  ~/Library/Application Support/Import Pro Tools/ptimport.log
+Réinstallation complète de l'environnement : supprimer le dossier
+  ~/Library/Application Support/Import Pro Tools/env

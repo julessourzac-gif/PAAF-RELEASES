@@ -1,16 +1,24 @@
 name: Release
 
-# Publie une release GitHub avec le zip de l'application
-# à chaque tag vX.Y (ex. : git tag v1.3 && git push origin v1.3).
-# Lancement manuel possible depuis l'onglet Actions (build sans publication).
+# Construit l'application sur macOS et joint le zip à la release.
+# Déclencheurs :
+#   - publication d'une release depuis github.com (Releases > Draft a new release, tag vX.Y)
+#   - push d'un tag vX.Y (git tag v1.3 && git push origin v1.3)
+#   - lancement manuel (onglet Actions) : build seul, zip téléchargeable dans les artefacts
 
 on:
+  release:
+    types: [published]
   push:
     tags: ["v*"]
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -24,7 +32,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           v="$(tr -d '[:space:]' < VERSION)"
-          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "Tag ${GITHUB_REF_NAME} ≠ VERSION v$v"; exit 1; }
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "::error::Tag ${GITHUB_REF_NAME} ≠ VERSION v$v"; exit 1; }
 
       - name: Build
         run: ./build.sh
@@ -40,7 +48,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="CHANGELOG.md"
-          gh release create "${GITHUB_REF_NAME}" dist/*.zip \
-            --title "Import Pro Tools ${GITHUB_REF_NAME}" \
-            --notes-file <(awk -v t="## ${GITHUB_REF_NAME#v}" '$0==t{f=1;next} /^## /{f=0} f' "$notes")
+          tag="${GITHUB_REF_NAME}"
+          awk -v t="## ${tag#v}" '$0==t{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.zip --clobber
+            # Notes du CHANGELOG si la release a été créée sans description
+            if [ -z "$(gh release view "$tag" --json body -q .body)" ] && [ -s notes.md ]; then
+              gh release edit "$tag" --notes-file notes.md
+            fi
+          else
+            gh release create "$tag" dist/*.zip --title "Import Pro Tools $tag" --notes-file notes.md
+          fi

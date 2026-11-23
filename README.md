@@ -58,7 +58,11 @@ python3 -m venv .venv && .venv/bin/pip install py-ptsl
 
 ## Publier une version
 
-1. Mettre à jour `VERSION` et `CHANGELOG.md` (section `## X.Y`).
-2. `git commit -am "vX.Y" && git tag vX.Y && git push origin main vX.Y`
+1. Mettre à jour `VERSION` et `CHANGELOG.md` (section `## X.Y`), commiter et pousser sur `main`.
+2. Créer la release, au choix :
+   - sur github.com : **Releases > Draft a new release**, tag `vX.Y` (le créer), **Publish** ;
+   - ou en ligne de commande : `git tag vX.Y && git push origin vX.Y`.
 
-Le workflow GitHub Actions construit l'application sur macOS et publie la release avec le zip.
+Le workflow GitHub Actions construit l'application sur macOS et joint le zip à la release
+(quelques minutes). Les notes de la section `## X.Y` du CHANGELOG sont reprises si la release
+n'a pas de description.

@@ -29,8 +29,10 @@ Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en fran�
 
 - `./build.sh` → `dist/Import Pro Tools.app` et `dist/Import_Pro_Tools_v<VERSION>.zip`.
 - Version unique dans `VERSION` ; notes dans `CHANGELOG.md` (`## X.Y`).
-- Release : `git tag vX.Y && git push origin vX.Y` → `.github/workflows/release.yml` (macos-latest)
-  vérifie tag = VERSION, construit et publie le zip.
+- Release : tag `vX.Y` poussé, ou release publiée depuis github.com → `.github/workflows/release.yml`
+  (macos-latest) vérifie tag = VERSION, construit et joint le zip (crée la release si absente).
+- Depuis une session Claude dans le cloud, le push de tags est refusé (403) : pousser `main`, et
+  laisser le propriétaire créer la release sur github.com.
 
 ## Limites connues
 

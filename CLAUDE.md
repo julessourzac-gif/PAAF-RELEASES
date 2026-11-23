@@ -1,4 +1,4 @@
-# Import Pro Tools (PAAF) — notes pour Claude Code
+# PAAF (ex-Import Pro Tools) — notes pour Claude Code
 
 Application macOS qui importe à la suite des AAF/OMF et des vidéos dans la session Pro Tools
 ouverte, chacun à un point d'entrée timecode, via le PTSL (gRPC sur localhost:31416, bibliothèque
@@ -12,22 +12,34 @@ Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en fran�
   - `import_video` : `CId_ImportVideo` (opération déclarée localement, absente de py-ptsl),
     `MD_MainVideoTrack` + `ML_Spot`. Sans piste vidéo dans la session, Pro Tools renvoie
     `PT_NoVideoTrackFound` : on passe alors en `MD_NewTrack`.
-  - Audio des vidéos : `start_audio_extraction` lance ffmpeg en parallèle (WAV BWF au format de
-    la session, dans `Audio Files`), puis `CId_ImportAudioToClipList` (AddAudio) et
-    `CId_SpotClipsByID` sur des pistes communes créées par `ensure_audio_tracks`.
-    Pro Tools peut renvoyer plusieurs clip_id par fichier : `spot_group` essaie le groupe puis
-    chaque id (erreur sinon : « incompatibilities between selected clips and destination track »).
+  - Positions (`spot_location`) : Pro Tools 2025+/PTSL 2026 exige `SpotLocationData.location`
+    (`TimelineLocation`, `TLType_TimeCode`) pour `CId_SpotClipsByID` ; l'ancien
+    `location_value` donne l'erreur « location » (vérifié sur le Mac du propriétaire).
+    `ImportVideo` fonctionne encore avec l'ancien format (le nouveau en secours).
+  - Audio des vidéos : `analyze_audio` (ffprobe + astats sur G, D, G−D) classe l'audio
+    (stéréo, double mono, gauche/droite seule, multicanal) ; `AudioPrep` lance ffmpeg en
+    parallèle (WAV BWF au format de la session, dans `Audio Files`, écrit en `.part` puis
+    renommé, réutilisé s'il existe déjà au bon format). L'interface le lance dès l'ajout.
+    Puis `CId_ImportAudioToClipList` (AddAudio) et `CId_SpotClipsByID` sur des pistes communes
+    (`ensure_audio_tracks`, jamais une piste existante d'un autre format : « NOM » stéréo,
+    « NOM MONO », « NOM 1…n »). Pro Tools renvoie un clip_id par canal (G, D) : il faut les
+    spotter ensemble ; `spot_group` essaie aussi les combinaisons.
     Replis : ConvertAudio sur le WAV, puis extraction par Pro Tools depuis la vidéo.
-- `src/ptsl_import_gui.py` : interface Tkinter, glisser-déposer via `tkinterdnd2`,
-  `::tk::mac::OpenDocument` pour les dépôts sur l'icône.
+  - `schedule` / `link_groups` : un AAF et une vidéo de même nom (`pair_key`) partagent un TC.
+  - AAF : `match_tracks` -> `MT_MatchTracks` (fusion dans les pistes de même nom).
+- `src/ptsl_import_gui.py` : interface Tkinter (thème clam sombre), glisser-déposer via
+  `tkinterdnd2`, `::tk::mac::OpenDocument` pour les dépôts sur l'icône. Accepte des chemins en
+  arguments. Onglets : inspecteur, pistes de la session, journal.
+- `src/aaf_inspect.py` : lecture des AAF avec pyaaf2 (pistes, clips, médias, métadonnées).
+- `macos/make_icon.py` : génère `macos/AppIcon.icns` et `src/assets/logo_*.png` (Pillow).
 - `macos/launcher` : lanceur bash auto-installant. Crée le venv dans
-  `~/Library/Application Support/Import Pro Tools/env` ; `DEPS_VERSION` à incrémenter uniquement
-  si les dépendances Python changent. `@VERSION@` est remplacé par `build.sh`.
+  `~/Library/Application Support/PAAF/env` (reprend l'ancien dossier « Import Pro Tools ») ;
+  `DEPS_VERSION` à incrémenter uniquement si les dépendances Python changent. `@VERSION@` est remplacé par `build.sh`.
 - `macos/Info.plist` : `@VERSION@` / `@BUILD@` remplacés au build.
 
 ## Build et release
 
-- `./build.sh` → `dist/Import Pro Tools.app` et `dist/Import_Pro_Tools_v<VERSION>.zip`.
+- `./build.sh` → `dist/PAAF.app` et `dist/PAAF_v<VERSION>.zip`.
 - Version unique dans `VERSION` ; notes dans `CHANGELOG.md` (`## X.Y`).
 - Release : tag `vX.Y` poussé, ou release publiée depuis github.com → `.github/workflows/release.yml`
   (macos-latest) vérifie tag = VERSION, construit et joint le zip (crée la release si absente).
@@ -38,6 +50,9 @@ Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en fran�
 
 - Timecode drop-frame non géré.
 - Audio entrelacé > 2 canaux : éclaté en mono par ffmpeg ; sans ffmpeg, refusé.
-- Rien n'a été testé contre un vrai Pro Tools depuis le cloud : vérifier sur le Mac du
-  propriétaire, et demander les lignes `✗` / `!` du journal en cas d'échec.
+- Depuis le cloud, rien ne peut être testé contre Pro Tools : vérifier sur le Mac du
+  propriétaire, et demander les lignes `✗` / `!` du journal en cas d'échec. En session locale,
+  Pro Tools tourne souvent (PTSL sur localhost:31416) : lecture libre, mais demander avant
+  toute écriture dans la session ouverte.
+- OMF : pas d'aperçu (pyaaf2 ne lit que l'AAF).
 - Application non signée ni notarisée (Gatekeeper : clic droit > Ouvrir).

@@ -26,7 +26,12 @@ Python `py-ptsl`).
     spotter ensemble ; `spot_group` essaie aussi les combinaisons.
     Replis : ConvertAudio sur le WAV, puis extraction par Pro Tools depuis la vidéo.
   - `schedule` / `link_groups` : un AAF et une vidéo de même nom (`pair_key`) partagent un TC.
-  - AAF : `match_tracks` -> `MT_MatchTracks` (fusion dans les pistes de même nom).
+  - AAF : toujours `MT_ImportAsNewTrack`. Ne jamais utiliser `MT_MatchTracks` : Pro Tools n'y
+    importe que les pistes qui ont déjà une homonyme dans la session et ignore les autres sans
+    erreur (vérifié dans Pro Tools 2026.4 : aucune piste créée). `match_tracks` (« pistes
+    communes ») est fait par `apply_aaf_layout` après l'import (coupé / collé au même TC dans la
+    piste de même nom et de même format, sinon renommage). Un import AAF qui ne crée aucune
+    piste audio lève une erreur (✗ au journal).
 - `src/ptsl_import_gui.py` : interface Tkinter (maquettes 1a, style MixCheck), glisser-déposer
   via `tkinterdnd2`, `::tk::mac::OpenDocument` pour les dépôts sur l'icône. Accepte des chemins
   en arguments. Vues selon l'état (`_view` : empty / ready / import / result) ; un changement de

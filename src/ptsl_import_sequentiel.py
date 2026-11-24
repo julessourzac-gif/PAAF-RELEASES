@@ -332,10 +332,34 @@ def _is_location_error(e) -> bool:
 
 # ------------------------------------------------------------------ PTSL : AAF
 
+def _aaf_layout(engine, path: Path, tc: str):
+    """Répartition par défaut (chaque piste de l'AAF sur sa piste de même nom) quand
+    l'appelant n'en fournit pas (ligne de commande). None si l'AAF n'est pas lisible (OMF,
+    pyaaf2 absent)."""
+    try:
+        import aaf_inspect
+        if not aaf_inspect.available() or path.suffix.lower() != ".aaf":
+            return None
+        info = aaf_inspect.inspect(path)
+        base = RATES[engine.session_timecode_rate()][0]
+    except Exception:
+        return None
+    t = TC(base)
+    end = t.to_tc(t.to_frames(tc) + round(((info.get("duration_s") or 0) + 2) * base))
+    return [{"name": tr["name"], "kind": tr["kind"], "on": True, "lane": tr["name"],
+             "explicit": False, "end": end} for tr in info.get("tracks", [])]
+
+
 def import_aaf(engine, path: Path, tc: str, args, layout=None, apply_layout=False):
-    """Import Session Data d'un AAF/OMF : toutes les pistes (nouvelles pistes, ou fusion
-    avec les pistes de même nom de la session), avec clips et médias (sans clips_and_media,
-    Pro Tools crée des pistes vides), gain de clip et automation de volume, calé sur le TC."""
+    """Import Session Data d'un AAF/OMF en nouvelles pistes, avec clips et médias (sans
+    clips_and_media, Pro Tools crée des pistes vides), gain de clip et automation de volume,
+    calé sur le TC.
+    Toujours en MT_ImportAsNewTrack : en MT_MatchTracks, Pro Tools n'importe que les pistes
+    qui ont déjà une homonyme dans la session et ignore les autres sans erreur (vérifié dans
+    Pro Tools 2026.4 : aucune piste créée dans une session sans « Audio 1… »). Les « pistes
+    communes » sont donc faites ensuite par PAAF (apply_aaf_layout : coupé / collé au même TC
+    dans la piste de même nom si elle existe, sinon la piste créée prend le nom de l'AAF)."""
+    match = getattr(args, "match_tracks", False)
     if args.copy_audio:
         audio_opt = pt.CopyFromSourceAudio
     elif args.convert_audio:
@@ -349,10 +373,7 @@ def import_aaf(engine, path: Path, tc: str, args, layout=None, apply_layout=Fals
         audio_options=audio_opt,
         audio_handle_size=args.handles,
         video_options=pt.CopyFromSourceVideo if args.copy_video else pt.LinkToSourceVideo,
-        # Avec une répartition des pistes modifiée, on importe toujours en nouvelles pistes :
-        # les fusions sont faites ensuite, piste par piste.
-        match_options=pt.MT_MatchTracks if getattr(args, "match_tracks", False) and not apply_layout
-        else pt.MT_ImportAsNewTrack,
+        match_options=pt.MT_ImportAsNewTrack,
         playlist_options=pt.ImportOverlayNewOnExistingPlaylists,
         track_data_to_import=pt.TrackDataToImport(
             clips_and_media=True,
@@ -368,30 +389,37 @@ def import_aaf(engine, path: Path, tc: str, args, layout=None, apply_layout=Fals
         import_type=pt.Session,
         session_data=session_data,
     )
-    before = _tracks(engine)
-    before_ids = {t.id for t in before}
+    if layout is None and match:
+        layout = _aaf_layout(engine, path, tc)
+    # Liste des pistes avant l'import : sans elle, on ne saurait pas lesquelles sont nouvelles
+    # (et les fusions / suppressions viseraient des pistes de la session).
+    try:
+        before = list(engine.track_list())
+    except Exception as e:
+        before = None
+        print(f"! pistes de la session illisibles ({e}) : import sans fusion ni renommage")
     engine.client.run(op)
-    created = [t for t in _tracks(engine) if t.id not in before_ids]
-    _report_created(created, layout, matched=session_data.match_options == pt.MT_MatchTracks)
-    if layout and apply_layout:
-        apply_aaf_layout(engine, created, before, layout, tc, match=getattr(args, "match_tracks", False))
+    if before is None:
+        return
+    try:
+        after = list(engine.track_list())
+    except Exception as e:
+        print(f"! pistes de la session illisibles après l'import ({e}) : pas de fusion ni de renommage")
+        return
+    before_ids = {t.id for t in before}
+    created = [t for t in after if t.id not in before_ids]
+    _report_created(created, layout)
+    if layout and (apply_layout or match):
+        apply_aaf_layout(engine, created, before, layout, tc, match=match)
+    elif match:
+        print("! pistes communes : AAF non lisible (OMF ?), pistes importées en nouvelles pistes")
 
 
 # ------------------------------------------------------------------ AAF : pistes après import
 
-def _tracks(engine):
-    try:
-        return list(engine.track_list())
-    except Exception:
-        return []
-
-
-def _track_ids(engine):
-    return {t.id for t in _tracks(engine)}
-
-
-def _report_created(created, layout, matched=False):
-    """Journal : pistes créées par l'import (diagnostic des imports sans audio)."""
+def _report_created(created, layout):
+    """Journal : pistes créées par l'import (diagnostic des imports sans audio). Un import
+    qui ne crée aucune piste alors que l'AAF en contient est un échec (✗, pas ✓)."""
     audio = [t for t in created if t.type == pt.TT_Audio]
     video = [t for t in created if t.type == pt.TT_Video]
     names = ", ".join(t.name for t in created[:12]) + (" …" if len(created) > 12 else "")
@@ -401,8 +429,8 @@ def _report_created(created, layout, matched=False):
         print(f"! pistes audio créées sans clips : {', '.join(empty[:8])}"
               " (médias introuvables ou non copiés ?)")
     expected = sum(1 for tr in (layout or []) if tr["kind"] == "Sound")
-    if expected and not audio and not matched:
-        print(f"! aucune piste audio créée alors que l'AAF en contient {expected}")
+    if expected and not audio:
+        raise RuntimeError(f"aucune piste audio créée par Pro Tools alors que l'AAF en contient {expected}")
 
 
 def map_aaf_tracks(created, layout):

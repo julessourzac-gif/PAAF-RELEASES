@@ -51,7 +51,16 @@ notarize() {  # $1 fichier (zip ou dmg)
 "$ROOT/build.sh"
 rm -f "$ZIP"
 
-# 2) signature de l'app (hardened runtime, horodatage) puis vérification
+# 2) signature (hardened runtime, horodatage) : d'abord chaque binaire embarqué (Python, ses
+#    modules .so / .dylib, ffmpeg, ffprobe), puis l'app elle-même ; enfin vérification
+find "$APP/Contents/Resources" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0 |
+  while IFS= read -r -d '' f; do
+    if file -b "$f" | grep -q '^Mach-O'; then printf '%s\0' "$f"; fi
+  done > "$DIST/.macho"
+echo "Signature de $(tr -cd '\0' < "$DIST/.macho" | wc -c | tr -d ' ') binaires embarqués…"
+xargs -0 -n 50 codesign --force --options runtime --timestamp --sign "$SIGN_ID" < "$DIST/.macho" 2>&1 \
+  | grep -v ': replacing existing signature$' || true
+rm -f "$DIST/.macho"
 codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"
 
@@ -69,7 +78,7 @@ cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 cp "$ROOT/LISEZMOI.txt" "$STAGE/"
 rm -f "$DMG"
-hdiutil create -volname "PAAF $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "PAAF $VERSION" -srcfolder "$STAGE" -ov -format ULMO "$DMG" >/dev/null
 rm -rf "$STAGE"
 codesign --force --timestamp --sign "$SIGN_ID" "$DMG"
 if [ "$NOTARIZE" = 1 ]; then

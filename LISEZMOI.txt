@@ -7,11 +7,10 @@ PAAF — installation
    normalement. Avec une version non signée (build de développement), faire
    clic droit sur l'app > Ouvrir, ou Réglages Système > Confidentialité et
    sécurité > « Ouvrir quand même ».
-3. Au premier lancement, l'app prépare son environnement (1 à 2 min, connexion
-   Internet requise) et propose d'installer via Homebrew ce qui manque :
-   Tkinter (interface) et ffmpeg (conversion rapide de l'audio des vidéos).
+3. Rien à installer : Python, l'interface et ffmpeg (conversion de l'audio des
+   vidéos) sont inclus dans l'application. Pas besoin de Homebrew ni d'Internet.
 
-Prérequis : macOS 11+, Homebrew (https://brew.sh), Pro Tools 2023 ou plus récent.
+Prérequis : macOS 11+ (Apple Silicon ou Intel), Pro Tools 2023 ou plus récent.
 
 Utilisation : ouvrir la session dans Pro Tools, lancer PAAF, glisser les AAF /
 vidéos (ou dossiers) depuis le Finder, choisir le placement, « Importer ».
@@ -20,5 +19,8 @@ affiche son contenu dans l'inspecteur (pistes, clips, métadonnées audio).
 
 Journal technique :
   ~/Library/Application Support/PAAF/paaf.log
-Réinstallation complète de l'environnement : supprimer le dossier
-  ~/Library/Application Support/PAAF/env
+Le dossier ~/Library/Application Support/PAAF/env (environnement installé par
+les versions 1.4 et antérieures) n'est plus utilisé : il peut être supprimé.
+
+Licences des composants inclus (Python, ffmpeg en LGPL) : PAAF.app/Contents/
+Resources/licences.

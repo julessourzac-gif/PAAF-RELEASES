@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Construit « PAAF.app » et l'archive zip de distribution.
 #   ./build.sh            -> dist/PAAF.app + dist/PAAF_v<VERSION>.zip
-# Fonctionne sous macOS (ditto) et Linux (zip, pour la CI).
+# macOS uniquement : l'app embarque Python, ses bibliothèques et ffmpeg (macos/build_runtime.sh,
+# résultat mis en cache dans build/runtime).
 set -euo pipefail
+[ "$(uname)" = "Darwin" ] || { echo "macOS uniquement"; exit 1; }
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
@@ -14,8 +16,13 @@ ZIP="$DIST/PAAF_v$VERSION.zip"
 
 echo "Build $NAME v$VERSION ($BUILD)"
 
+# Environnement embarqué (préparé une fois, puis réutilisé)
+"$ROOT/macos/build_runtime.sh"
+RUNTIME="$ROOT/build/runtime"
+PY="$RUNTIME/python/bin/python3"
+
 # Vérifications
-python3 -m py_compile "$ROOT/src/ptsl_import_sequentiel.py" "$ROOT/src/ptsl_import_gui.py" "$ROOT/src/aaf_inspect.py" \
+"$PY" -m py_compile "$ROOT/src/ptsl_import_sequentiel.py" "$ROOT/src/ptsl_import_gui.py" "$ROOT/src/aaf_inspect.py" \
   "$ROOT/src/paaf_theme.py" "$ROOT/src/paaf_strings.py" "$ROOT/src/conform.py"
 bash -n "$ROOT/macos/launcher"
 
@@ -26,13 +33,8 @@ sed -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$BUILD/g" "$ROOT/macos/Info.plist"
 # Lanceur bash dans Resources ; exécutable compilé (signable / notarisable) dans MacOS.
 sed -e "s/@VERSION@/$VERSION/g" "$ROOT/macos/launcher" > "$APP/Contents/Resources/launcher"
 chmod 755 "$APP/Contents/Resources/launcher"
-if [ "$(uname)" = "Darwin" ] && command -v clang >/dev/null; then
-  clang -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
-        -o "$APP/Contents/MacOS/PAAF" "$ROOT/macos/stub.c"
-else
-  # hors macOS (CI Linux) : le script sert directement d'exécutable
-  cp "$APP/Contents/Resources/launcher" "$APP/Contents/MacOS/PAAF"
-fi
+clang -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
+      -o "$APP/Contents/MacOS/PAAF" "$ROOT/macos/stub.c"
 chmod 755 "$APP/Contents/MacOS/PAAF"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 cp "$ROOT/macos/AppIcon.icns" "$ROOT/src/ptsl_import_sequentiel.py" "$ROOT/src/ptsl_import_gui.py" \
@@ -41,19 +43,24 @@ mkdir -p "$APP/Contents/Resources/assets"
 cp "$ROOT"/src/assets/logo_64.png "$ROOT"/src/assets/logo_128.png "$ROOT"/src/assets/logo_256.png \
    "$ROOT"/src/assets/paaf-logo-clair-2x.png "$ROOT"/src/assets/paaf-logo-sombre-2x.png \
    "$APP/Contents/Resources/assets/"
+# Python, bibliothèques, ffmpeg / ffprobe et leurs licences
+ditto "$RUNTIME/python" "$APP/Contents/Resources/python"
+ditto "$RUNTIME/bin" "$APP/Contents/Resources/bin"
+ditto "$RUNTIME/licences" "$APP/Contents/Resources/licences"
+# .pyc des modules de PAAF précompilés : l'app signée ne les écrit pas elle-même
+"$PY" -m compileall -q --invalidation-mode unchecked-hash \
+  "$APP/Contents/Resources/"*.py >/dev/null
 cp "$ROOT/LISEZMOI.txt" "$DIST/"
 
-if command -v plutil >/dev/null; then plutil -lint "$APP/Contents/Info.plist"; fi
+plutil -lint "$APP/Contents/Info.plist"
 
-# Archive : conserve les droits d'exécution du lanceur
-if command -v ditto >/dev/null; then
-  STAGE="$(mktemp -d)"
-  cp -R "$APP" "$DIST/LISEZMOI.txt" "$STAGE/"
-  (cd "$STAGE" && ditto -c -k --sequesterRsrc . "$ZIP")
-  rm -rf "$STAGE"
-else
-  (cd "$DIST" && zip -qry "$ZIP" "$NAME.app" LISEZMOI.txt)
-fi
+# Archive : conserve les droits d'exécution et les liens symboliques
+STAGE="$(mktemp -d)"
+ditto "$APP" "$STAGE/$NAME.app"
+cp "$DIST/LISEZMOI.txt" "$STAGE/"
+(cd "$STAGE" && ditto -c -k --sequesterRsrc . "$ZIP")
+rm -rf "$STAGE"
+du -sh "$APP"
 
 echo "✓ $APP"
 echo "✓ $ZIP"

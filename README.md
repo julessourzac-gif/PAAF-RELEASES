@@ -28,16 +28,13 @@ d'Avid). Aucune automatisation de l'interface de Pro Tools.
 
 ## Installation
 
-1. Télécharger le dernier `PAAF_vX.Y.zip` dans
+1. Télécharger le dernier `PAAF_vX.Y.dmg` dans
    [Releases](https://github.com/julessourzac-gif/PAAF-RELEASES/releases).
-2. Décompresser, glisser **PAAF** dans Applications (supprimer l'ancien « Import Pro Tools »).
-3. Premier lancement : clic droit > **Ouvrir** (application non signée). Si macOS bloque :
-   Réglages Système > Confidentialité et sécurité > **Ouvrir quand même**, ou
-   `xattr -dr com.apple.quarantine "/Applications/PAAF.app"`.
-4. L'application prépare son environnement Python (1 à 2 min) et propose d'installer via
-   Homebrew ce qui manque (Tkinter, ffmpeg).
+2. Ouvrir le DMG, glisser **PAAF** dans Applications (supprimer l'ancien « Import Pro Tools »).
+   L'application est signée et notarisée : elle s'ouvre directement.
+3. Rien à installer : Python (avec Tkinter), les bibliothèques et ffmpeg / ffprobe sont inclus.
 
-Prérequis : macOS 11+, [Homebrew](https://brew.sh), Pro Tools 2023 ou plus récent.
+Prérequis : macOS 11+ (Apple Silicon ou Intel), Pro Tools 2023 ou plus récent.
 
 Journal technique : `~/Library/Application Support/PAAF/paaf.log`
 

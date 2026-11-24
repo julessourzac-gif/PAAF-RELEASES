@@ -59,9 +59,19 @@ Python `py-ptsl`).
 - `macos/stub.c` : exécutable compilé de l'app (`Contents/MacOS/PAAF`, universel arm64 + x86_64),
   qui lance `Contents/Resources/launcher` avec /bin/bash. Un vrai binaire est nécessaire pour la
   signature avec hardened runtime et la notarisation (un script en exécutable principal se signe mal).
-- `macos/launcher` (copié dans `Contents/Resources`) : lanceur bash auto-installant. Crée le venv dans
-  `~/Library/Application Support/PAAF/env` (reprend l'ancien dossier « Import Pro Tools ») ;
-  `DEPS_VERSION` à incrémenter uniquement si les dépendances Python changent. `@VERSION@` est remplacé par `build.sh`.
+- `macos/launcher` (copié dans `Contents/Resources`) : lance le Python embarqué
+  (`Contents/Resources/python`) avec `Contents/Resources/bin` (ffmpeg, ffprobe) en tête du PATH,
+  sans Homebrew, `PYTHONNOUSERSITE` et `PYTHONDONTWRITEBYTECODE` (l'app signée ne doit pas écrire
+  dans son paquet : les .pyc sont précompilés au build). Journal et réglages dans
+  `~/Library/Application Support/PAAF` (reprend l'ancien dossier « Import Pro Tools »).
+  `@VERSION@` est remplacé par `build.sh`.
+- `macos/build_runtime.sh` (appelé par `build.sh`, résultat en cache dans `build/runtime`, ignoré
+  par git) : Python de python-build-standalone (arm64 et x86_64 fusionnés avec lipo, empreintes
+  SHA256SUMS vérifiées), bibliothèques en wheels universal2 (versions figées dans `PIP_DEPS`),
+  ffmpeg / ffprobe compilés depuis les sources officielles en LGPL (sans `--enable-gpl`, contrôlé),
+  pour les deux architectures puis fusionnés ; licences dans `Contents/Resources/licences`.
+  Changer une version dans l'en-tête du script suffit à reconstruire l'environnement.
+  `sign_notarize.sh` signe chaque binaire embarqué avant l'app.
 - `macos/Info.plist` : `@VERSION@` / `@BUILD@` remplacés au build.
 
 ## Build et release
@@ -88,4 +98,7 @@ Python `py-ptsl`).
   localhost:31416) ; en cas d'échec, regarder les lignes `✗` / `!` du journal.
 - OMF : pas d'aperçu (pyaaf2 ne lit que l'AAF).
 - Les builds de la CI (workflow) ne sont pas signés : seule la distribution faite avec
-  `sign_notarize.sh` l'est.
+  `sign_notarize.sh` l'est. Le workflow compile aussi ffmpeg (deux architectures, une quinzaine de minutes).
+- Mac Intel : pas de glisser-déposer dans la fenêtre. tkinterdnd2 0.7.0 ne fournit tkdnd pour
+  Tcl/Tk 9 (celui du Python 3.14 embarqué) qu'en arm64 ; l'interface l'indique, le sélecteur de
+  fichiers et le dépôt sur l'icône de l'app fonctionnent.

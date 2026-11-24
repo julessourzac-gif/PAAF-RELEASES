@@ -1,5 +1,13 @@
 # Historique des versions
 
+## 1.5
+- Application autonome : Python (avec l'interface Tkinter), les bibliothèques et ffmpeg / ffprobe
+  sont inclus dans l'app, pour Apple Silicon et Intel. Plus d'installation au premier lancement,
+  plus besoin de Homebrew ni d'Internet.
+- ffmpeg compilé depuis les sources officielles en LGPL ; licences dans l'application.
+- Correction de l'import AAF (voir 1.4.2).
+
+
 ## 1.4.2
 - Correction : l'import d'un AAF ne créait aucune piste quand l'option « Pistes communes »
   était active (réglage par défaut) et que la session n'avait pas encore de pistes de même nom.

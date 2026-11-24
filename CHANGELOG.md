@@ -13,6 +13,17 @@
 - Après un import : « Reprendre » relance les fichiers en échec ou non traités ; export du journal.
 - Les fichiers introuvables sont écartés de l'import au lieu d'échouer un à un.
 - Vérification facultative des mises à jour au lancement (releases GitHub).
+- AAF dans la timeline : la piste AAF / OMF se déplie (▸) en une sous-piste par piste commune
+  (« Audio 1 »…). L'« Audio 1 » de chaque AAF va sur une seule piste Pro Tools (option « Pistes
+  communes », activée par défaut). Clic sur un bloc : importer ou non (⌘ / ⇧ : plusieurs) ;
+  clic sur le nom d'une sous-piste : toute la sous-piste ; glisser un bloc sur une autre
+  sous-piste : il la rejoint. Après l'import, PAAF coupe / colle au même TC, renomme ou retire
+  les pistes (liens de sélection et mode Slip activés le temps de l'opération, puis rétablis).
+- Historique : annuler / rétablir les modifications du plan (⌘Z / ⇧⌘Z, boutons ↶ ↷, menu
+  Édition > Historique pour revenir à une étape).
+- Défilement au trackpad et à la molette dans la liste et la timeline ; ⌥ + défilement : zoom.
+- Nouvelle icône d'application, d'après le logo PAAF.
+- Journal : pistes créées par chaque import AAF, avec alerte si aucune piste audio n'est créée.
 
 
 ## 1.3

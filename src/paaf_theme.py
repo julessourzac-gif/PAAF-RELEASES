@@ -119,6 +119,48 @@ def apply_ttk(root, p, f):
 
 
 # --------------------------------------------------------------------------- dessin
+def touch_deltas(widget, e):
+    """Défilement trackpad (Tk 9, <TouchpadScroll>) : (dx, dy) en pixels."""
+    try:
+        dx, dy = widget.tk.splitlist(widget.tk.call("tk::PreciseScrollDeltas", e.delta))
+        return int(dx), int(dy)
+    except (tk.TclError, ValueError):
+        return 0, 0
+
+
+def bind_scroll(widget, on_pixels, on_zoom=None):
+    """Trackpad et molette → on_pixels(dx, dy) ; ⌥ + défilement → on_zoom(dy, x)."""
+    def touch(e):
+        dx, dy = touch_deltas(widget, e)
+        if dx or dy:
+            on_pixels(dx, dy)
+        return "break"
+
+    def touch_zoom(e):
+        _, dy = touch_deltas(widget, e)
+        if dy and on_zoom:
+            on_zoom(dy, e.x)
+        return "break"
+
+    def wheel(e, horizontal=False):
+        step = 40 * e.delta / 120 if abs(e.delta) >= 120 else 4 * e.delta  # souris : 120 par cran
+        on_pixels(step, 0) if horizontal else on_pixels(0, step)
+        return "break"
+
+    def wheel_zoom(e):
+        if on_zoom:
+            on_zoom(40 * e.delta / 120 if abs(e.delta) >= 120 else 4 * e.delta, e.x)
+        return "break"
+
+    for seq, fn in (("<TouchpadScroll>", touch), ("<Option-TouchpadScroll>", touch_zoom),
+                    ("<MouseWheel>", wheel), ("<Shift-MouseWheel>", lambda e: wheel(e, True)),
+                    ("<Option-MouseWheel>", wheel_zoom)):
+        try:
+            widget.bind(seq, fn)
+        except tk.TclError:  # Tk < 9 : pas de <TouchpadScroll>
+            pass
+
+
 def round_rect(cv, x1, y1, x2, y2, r, **kw):
     r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
     pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
@@ -614,22 +656,34 @@ class TimelineCanvas(tk.Canvas):
     items : [{"index", "kind": "aaf"|"video", "name", "start": frames, "dur": frames,
               "audio": libellé | None, "state"}]
     state ∈ plan | selected | done | current | pending | failed | missing
+    La piste AAF / OMF se déplie (▸) en une sous-piste par piste commune (« Audio 1 »…) :
+    blocks : [{"key": (fichier, piste), "lane", "kind": "Sound"|"Picture", "on", "state",
+               "clips": [(début, fin) en images], "label"}]
+    Clic sur un bloc : importer / ne pas importer (⌘ ou ⇧ : sélection multiple, puis clic sur la
+    sélection) ; glisser un bloc sur une autre sous-piste : il rejoint cette piste ; clic sur le
+    nom d'une sous-piste : toute la sous-piste.
     """
 
     LABEL_W, RULER_H, PAD, GAP = 118, 22, 14, 6
+    MAIN_H, SUB_H, SUB_GAP = 24, 20, 4
 
-    def __init__(self, master, p, f, lanes, on_click=None, on_double=None):
+    def __init__(self, master, p, f, lanes, on_click=None, on_double=None, callbacks=None):
         super().__init__(master, highlightthickness=0, bd=0, bg=_parent_bg(master, p["bg"]), height=150)
         self.p, self.f, self.lane_labels = p, f, lanes
         self.on_click, self.on_double = on_click, on_double
+        self.cb = callbacks or {}
         self.items, self.playhead, self.fps, self.empty_start = [], None, 25, 3600 * 25
         self.zoom, self.view_t0, self.boxes = 1.0, None, []
+        self.sub_lanes, self.blocks, self.aaf_open, self.sel = [], [], False, set()
+        self.sub_boxes, self.lane_hits, self.tri_box, self.sub_rows = [], [], None, []
+        self._press, self._drag_lane = None, None
         self._wheel = 0
         self.bind("<Configure>", lambda e: self.redraw())
-        self.bind("<Button-1>", lambda e: self._hit(e, self.on_click))
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_motion)
+        self.bind("<ButtonRelease-1>", self._on_release)
         self.bind("<Double-Button-1>", lambda e: self._hit(e, self.on_double))
-        self.bind("<MouseWheel>", self._on_wheel)
-        self.bind("<Shift-MouseWheel>", self._on_wheel)
+        bind_scroll(self, self._on_pan, self._on_zoom_scroll)
 
     # -- données
     def set_items(self, items, fps=25, playhead=None, empty_start=None):
@@ -637,6 +691,17 @@ class TimelineCanvas(tk.Canvas):
         if empty_start is not None:
             self.empty_start = empty_start
         self.redraw()
+
+    def set_sub(self, lanes, blocks, open_):
+        """lanes : [(nom, "Sound"|"Picture")]"""
+        self.sub_lanes, self.blocks, self.aaf_open = lanes, blocks, open_
+        keys = {b["key"] for b in blocks}
+        self.sel &= keys
+
+    @classmethod
+    def height_for(cls, n_sub):
+        return 10 + cls.RULER_H + cls.GAP + 3 * cls.MAIN_H + 2 * cls.GAP + n_sub * (cls.SUB_H + cls.SUB_GAP) \
+            + cls.PAD
 
     def _span(self):
         if self.items:
@@ -673,17 +738,32 @@ class TimelineCanvas(tk.Canvas):
             return
         self.view_t0 = max(t0, min(self.view_t0 if self.view_t0 is not None else t0, t0 + span - vspan))
 
-    def _on_wheel(self, e):
+    def _view_width(self):
+        return max(1, self.winfo_width() - 2 * self.PAD - self.LABEL_W)
+
+    def _on_pan(self, dx, dy):
+        """Deux doigts : parcourir la timeline zoomée (horizontal, ou vertical à défaut)."""
         if self.zoom <= 1.0:
             return
-        self._wheel += e.delta
-        steps = int(self._wheel / 30)
-        if not steps:
-            return
-        self._wheel -= steps * 30
+        d = dx if abs(dx) >= abs(dy) else dy
         t0, span = self._span()
+        vspan = span / self.zoom
         vt0 = self.view_t0 if self.view_t0 is not None else t0
-        self.view_t0 = vt0 - steps * (span / self.zoom) * 0.05
+        self.view_t0 = vt0 - d / self._view_width() * vspan
+        self._clamp()
+        self.redraw()
+
+    def _on_zoom_scroll(self, dy, x):
+        """⌥ + défilement : zoom autour du point sous le curseur."""
+        t0, span = self._span()
+        vspan = span / self.zoom
+        vt0 = self.view_t0 if self.view_t0 is not None else t0
+        frac = min(1.0, max(0.0, (x - self.PAD - self.LABEL_W) / self._view_width()))
+        at = vt0 + frac * vspan
+        factor = 1.0 + min(0.5, abs(dy) / 100)
+        self.zoom = max(1.0, min(256.0, self.zoom * (factor if dy > 0 else 1 / factor)))
+        new = span / self.zoom
+        self.view_t0 = at - frac * new
         self._clamp()
         self.redraw()
 
@@ -711,6 +791,10 @@ class TimelineCanvas(tk.Canvas):
         x0, x1 = self.PAD + self.LABEL_W, w - self.PAD
         top = 10 + self.RULER_H + self.GAP
         lane_h = (h - top - self.PAD - 2 * self.GAP) / 3
+        self.sub_boxes, self.lane_hits, self.tri_box, self.sub_rows = [], [], None, []
+        open_ = self.aaf_open and self.sub_lanes
+        if open_:
+            lane_h = self.MAIN_H
         t0, span = self._span()
         vspan = span / self.zoom
         vt0 = self.view_t0 if self.view_t0 is not None else t0
@@ -731,12 +815,23 @@ class TimelineCanvas(tk.Canvas):
             t += step
 
         colors = [p["vid"], p["aaf"], p["vaud"]]
+        y = top
         for li, label in enumerate(self.lane_labels):
-            y = top + li * (lane_h + self.GAP)
+            if li == 2 and open_:  # sous-pistes de l'AAF, entre AAF / OMF et l'audio des vidéos
+                y = self._draw_sub(X, x0, x1, y)
             color = colors[li]
-            self.create_rectangle(self.PAD, y + lane_h / 2 - 4, self.PAD + 8, y + lane_h / 2 + 4,
-                                  fill=color, outline="")
-            self.create_text(self.PAD + 16, y + lane_h / 2, text=fit(f.cap, caps(label), self.LABEL_W - 20),
+            lx = self.PAD
+            if li == 1 and self.sub_lanes:
+                tc = p["txt2"]
+                cy = y + lane_h / 2
+                if open_:
+                    self.create_polygon(lx, cy - 3, lx + 8, cy - 3, lx + 4, cy + 3, fill=tc, outline="")
+                else:
+                    self.create_polygon(lx + 1, cy - 4, lx + 7, cy, lx + 1, cy + 4, fill=tc, outline="")
+                self.tri_box = (0, y, x0, y + lane_h)
+                lx += 12
+            self.create_rectangle(lx, y + lane_h / 2 - 4, lx + 8, y + lane_h / 2 + 4, fill=color, outline="")
+            self.create_text(lx + 16, y + lane_h / 2, text=fit(f.cap, caps(label), self.LABEL_W - 20 - (lx - self.PAD)),
                              anchor="w", fill=p["txt3"], font=f.cap)
             round_rect(self, x0, y, x1, y + lane_h, 6, fill=p["lane"], outline="")
             for it in self.items:
@@ -751,12 +846,144 @@ class TimelineCanvas(tk.Canvas):
                 if xb < x0 or xa > x1:
                     continue
                 self._clip(it, max(xa, x0), min(xb, x1), y + 3, y + lane_h - 3, color, label_txt,
-                           waveform=li > 0)
+                           waveform=li > 0 and not open_)
+            y += lane_h + self.GAP
         if self.playhead is not None:
             px = X(self.playhead)
             if x0 <= px <= x1:
                 self.create_line(px, top - 4, px, h - self.PAD, fill=p["play"], width=2)
                 self.create_polygon(px - 6, 6, px + 6, 6, px, 14, fill=p["play"], outline="")
+
+    def _draw_sub(self, X, x0, x1, y):
+        """Sous-pistes de l'AAF : une rangée par piste commune ; retourne le y suivant."""
+        p, f = self.p, self.f
+        for name, kind in self.sub_lanes:
+            y0, y1 = y, y + self.SUB_H
+            self.sub_rows.append((y0, y1, name, kind))
+            mine = [b for b in self.blocks if b["lane"] == name]
+            n_on = sum(1 for b in mine if b["on"])
+            hot = self._drag_lane == name
+            color = p["aaf"] if kind == "Sound" else p["vid"]
+            bx, cy = self.PAD + 12, (y0 + y1) / 2
+            # case : tout / partie / rien de la sous-piste
+            full = mine and n_on == len(mine)
+            round_rect(self, bx, cy - 6, bx + 12, cy + 6, 3, fill=p["blu"] if n_on else "",
+                       outline="" if n_on else p["line2"], width=1.2)
+            if full:
+                self.create_line(bx + 3, cy, bx + 5.5, cy + 2.5, bx + 9.5, cy - 3, fill="#ffffff", width=1.6)
+            elif n_on:
+                self.create_line(bx + 3, cy, bx + 9, cy, fill="#ffffff", width=1.6)
+            self.create_text(bx + 18, cy, text=fit(f.mini, name, self.LABEL_W - 32), anchor="w", font=f.mini,
+                             fill=p["txt2"] if n_on else p["txt3"])
+            self.lane_hits.append((0, y0, x0, y1, name))
+            round_rect(self, x0, y0, x1, y1, 4, fill=mix(p["lane"], p["blu"], .8) if hot else
+                       mix(p["lane"], p["well"], .55), outline=p["blu"] if hot else "")
+            for b in mine:
+                self._block(b, X, x0, x1, y0 + 2, y1 - 2, color)
+            y = y1 + self.SUB_GAP
+        return y + self.GAP - self.SUB_GAP
+
+    def _block(self, b, X, x0, x1, ya, yb, color):
+        p = self.p
+        st = b.get("state", "plan")
+        if not b["clips"]:
+            return
+        xa = max(x0, X(min(c[0] for c in b["clips"])))
+        xb = min(x1, X(max(c[1] for c in b["clips"])))
+        if xb < x0 or xa > x1:
+            return
+        if b["on"]:
+            fill = color
+            if st == "pending":
+                fill = mix(color, p["well"], .3)
+            elif st == "failed":
+                fill = p["rec"]
+            elif st == "missing":
+                fill = ""
+            for c0, c1 in b["clips"]:
+                ca, cb = max(x0, X(c0)), min(x1, X(c1))
+                if cb > ca:
+                    self.create_rectangle(ca, ya, max(ca + 1, cb - .5), yb, fill=fill or p["well"],
+                                          outline=p["rec"] if st == "missing" else "")
+        else:
+            round_rect(self, xa, ya, max(xa + 3, xb), yb, 3, fill="", outline=p["txt3"], dash=(3, 3))
+            self.create_line(xa + 2, (ya + yb) / 2, max(xa + 3, xb) - 2, (ya + yb) / 2, fill=p["txt3"])
+        if b["key"] in self.sel:
+            round_rect(self, xa - 2, ya - 2, max(xa + 3, xb) + 2, yb + 2, 4, fill="", outline=p["txt"], width=2)
+        if b.get("label") and xb - xa > 40:
+            text = fit(self.f.mini, b["label"], xb - xa - 10)
+            tw = self.f.mini.measure(text)
+            self.create_rectangle(xa + 3, ya + 1, xa + 9 + tw, yb - 1, fill=p["well"], outline="")
+            self.create_text(xa + 6, (ya + yb) / 2, text=text, anchor="w", font=self.f.mini,
+                             fill=p["txt"] if b["on"] else p["txt3"])
+        self.sub_boxes.append((xa - 2, ya - 2, max(xa + 3, xb) + 2, yb + 2, b["key"]))
+
+    # -- interactions (sous-pistes)
+    def _block_at(self, e):
+        for x1, y1, x2, y2, key in reversed(self.sub_boxes):
+            if x1 <= e.x <= x2 and y1 <= e.y <= y2:
+                return key
+        return None
+
+    def _row_at(self, y):
+        for y0, y1, name, kind in self.sub_rows:
+            if y0 - self.SUB_GAP / 2 <= y <= y1 + self.SUB_GAP / 2:
+                return name, kind
+        return None
+
+    def _on_press(self, e):
+        self._press, self._drag_lane = None, None
+        if self.tri_box and self.tri_box[0] <= e.x <= self.tri_box[2] and self.tri_box[1] <= e.y <= self.tri_box[3]:
+            if self.cb.get("open"):
+                self.cb["open"]()
+            return
+        for x1, y1, x2, y2, name in self.lane_hits:
+            if x1 <= e.x <= x2 and y1 <= e.y <= y2:
+                if self.cb.get("lane_toggle"):
+                    self.cb["lane_toggle"](name)
+                return
+        key = self._block_at(e)
+        if key is not None:
+            self._press = (key, e.x, e.y, e.state)
+            return
+        if self.sel and self._row_at(e.y):
+            self.sel.clear()
+            self.redraw()
+            return
+        self._hit(e, self.on_click)
+
+    def _on_motion(self, e):
+        if not self._press or not self.cb.get("can_edit", lambda: True)():
+            return
+        key, px, py, _ = self._press
+        if self._drag_lane is None and abs(e.y - py) < 6:
+            return
+        kind = next((b["kind"] for b in self.blocks if b["key"] == key), None)
+        row = self._row_at(e.y)
+        lane = row[0] if row and row[1] == kind else ""
+        if lane != self._drag_lane:
+            self._drag_lane = lane
+            self.redraw()
+
+    def _on_release(self, e):
+        press, lane = self._press, self._drag_lane
+        self._press, self._drag_lane = None, None
+        if not press:
+            return
+        key, _, _, state = press
+        keys = sorted(self.sel) if key in self.sel and len(self.sel) > 1 else [key]
+        if lane is not None:
+            self.redraw()
+            if lane and self.cb.get("move"):
+                self.cb["move"](keys, lane)
+            return
+        if state & 0x1 or state & 0x8:
+            self.sel ^= {key}
+            self.redraw()
+        elif self.cb.get("toggle"):
+            if key not in self.sel:
+                self.sel.clear()
+            self.cb["toggle"](keys)
 
     def _clip(self, it, xa, xb, ya, yb, color, label, waveform):
         p, st = self.p, it["state"]
@@ -835,7 +1062,7 @@ class PlanTable(tk.Frame):
         self.body.bind("<Double-Button-1>", self._on_double)
         for seq in ("<Button-2>", "<Button-3>", "<Control-Button-1>"):
             self.body.bind(seq, self._on_context)
-        self.body.bind("<MouseWheel>", self._on_wheel)
+        bind_scroll(self.body, lambda dx, dy: self.body.yview_scroll(int(-dy), "units"))
         k = self.body.bind
         k("<Up>", lambda e: self._key_move(-1, False))
         k("<Down>", lambda e: self._key_move(1, False))
@@ -1033,13 +1260,6 @@ class PlanTable(tk.Frame):
             self.anchor = i
             self.select([i], see=False)
         self.cb["context"](e.x_root, e.y_root)
-
-    def _on_wheel(self, e):
-        self._wheel += e.delta
-        steps = int(self._wheel / 2)
-        if steps:
-            self._wheel -= steps * 2
-            self.body.yview_scroll(-steps * 6, "units")
 
     def _key_move(self, d, extend):
         if not self.rows:

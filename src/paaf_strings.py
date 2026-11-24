@@ -1,6 +1,18 @@
 """PAAF — textes de l'interface (français / anglais)."""
 
 FR = dict(
+    menu_edit="Édition", menu_history="Historique", undo="Annuler", redo="Rétablir",
+    undo_label="Annuler « {a} »", redo_label="Rétablir « {a} »", h_open="Ouverture",
+    h_add_one="{n} fichier ajouté", h_add_other="{n} fichiers ajoutés",
+    h_remove_one="{n} fichier retiré", h_remove_other="{n} fichiers retirés",
+    h_move_one="{n} fichier déplacé", h_move_other="{n} fichiers déplacés",
+    h_sort="Tri de la liste", h_tc="Point d'entrée de {f}", h_mode="Mode de placement",
+    h_field="{f}", h_csv="Plan CSV chargé",
+    h_tracks_on_one="{n} piste AAF activée", h_tracks_on_other="{n} pistes AAF activées",
+    h_tracks_off_one="{n} piste AAF désactivée", h_tracks_off_other="{n} pistes AAF désactivées",
+    h_tracks_move_one="{n} piste AAF → {lane}", h_tracks_move_other="{n} pistes AAF → {lane}",
+    st_layout="Pistes réparties",
+    log_overlap="! « {a} » rejoint « {lane} » où se trouve déjà « {b} » : les clips qui se chevauchent seront remplacés",
     refresh="Actualiser", connecting="Connexion à Pro Tools…", pt_not_connected="Pro Tools non connecté",
     pt_unreachable="Pro Tools injoignable", no_session="aucune session ouverte", not_connected="Non connecté.",
     conn_lost="Pro Tools ne répond plus.", rate_unsupported="cadence TC non gérée ({r})",
@@ -36,14 +48,14 @@ FR = dict(
     subfolders="Inclure les sous-dossiers",
     dnd_missing="(glisser-déposer indisponible : pip install tkinterdnd2)",
     dnd_error="Glisser-déposer indisponible : {e}", journal="Journal",
-    hint="Double-clic : modifier le point d'entrée · Glisser une ligne : réordonner · ⌥↑ ⌥↓ : déplacer · "
-         "⌫ : retirer · ⌘I : inspecter · Dépose des fichiers n'importe où dans la fenêtre",
+    hint="Double-clic : point d'entrée · Timeline ▸ AAF : clic = importer ou non (⌘ : plusieurs), "
+         "glisser vers une autre piste · Glisser une ligne : réordonner · ⌫ : retirer · ⌘Z / ⇧⌘Z : annuler / rétablir",
     settings_title="Réglages d'import", settings_note="Les réglages s'appliquent au prochain import.",
     close="Fermer", sec_aaf="AAF · OMF", sec_video="Vidéo", sec_list="Liste", sec_app="Application",
     audio="Audio", aaf_mode_link="Lier aux fichiers source", aaf_mode_copy="Copier dans la session",
     aaf_mode_convert="Convertir au format de la session", aaf_mode_consolidate="Consolider",
     clip_gain="Gain de clip", vol_auto="Automation de volume", copy_video="Copier la vidéo référencée",
-    match_tracks="Fusionner dans les pistes de même nom", link_same_name="Caler au même TC AAF et vidéo de même nom",
+    match_tracks="Pistes communes : même nom → même piste", link_same_name="Caler au même TC AAF et vidéo de même nom",
     video_audio="Importer l'audio sur la piste commune", track="Piste",
     ffmpeg_extract="Extraire l'audio avec ffmpeg (en parallèle)", ffmpeg_absent="ffmpeg absent (brew install ffmpeg)",
     preconvert="Convertir dès l'ajout des fichiers", dual_mono="Double mono → mono",
@@ -97,6 +109,18 @@ FR = dict(
 )
 
 EN = dict(
+    menu_edit="Edit", menu_history="History", undo="Undo", redo="Redo",
+    undo_label="Undo “{a}”", redo_label="Redo “{a}”", h_open="Opening",
+    h_add_one="Add {n} file", h_add_other="Add {n} files",
+    h_remove_one="Remove {n} file", h_remove_other="Remove {n} files",
+    h_move_one="Move {n} file", h_move_other="Move {n} files",
+    h_sort="Sort the list", h_tc="Entry point of {f}", h_mode="Placement mode",
+    h_field="{f}", h_csv="CSV plan loaded",
+    h_tracks_on_one="{n} AAF track enabled", h_tracks_on_other="{n} AAF tracks enabled",
+    h_tracks_off_one="{n} AAF track disabled", h_tracks_off_other="{n} AAF tracks disabled",
+    h_tracks_move_one="{n} AAF track → {lane}", h_tracks_move_other="{n} AAF tracks → {lane}",
+    st_layout="Tracks arranged",
+    log_overlap="! “{a}” joins “{lane}” which already holds “{b}”: overlapping clips will be replaced",
     refresh="Refresh", connecting="Connecting to Pro Tools…", pt_not_connected="Pro Tools not connected",
     pt_unreachable="Pro Tools unreachable", no_session="no session open", not_connected="Not connected.",
     conn_lost="Pro Tools stopped responding.", rate_unsupported="unsupported TC rate ({r})",
@@ -126,14 +150,14 @@ EN = dict(
     drop_sub="AAF · OMF · MOV · MP4 · M4V · MXF · AVI — or drop them on the PAAF icon in the Dock",
     subfolders="Include subfolders", dnd_missing="(drag and drop unavailable: pip install tkinterdnd2)",
     dnd_error="Drag and drop unavailable: {e}", journal="Log",
-    hint="Double-click: edit entry point · Drag a row: reorder · ⌥↑ ⌥↓: move · ⌫: remove · ⌘I: inspect · "
-         "Drop files anywhere in the window",
+    hint="Double-click: entry point · Timeline ▸ AAF: click = import or not (⌘: several), "
+         "drag to another track · Drag a row: reorder · ⌫: remove · ⌘Z / ⇧⌘Z: undo / redo",
     settings_title="Import settings", settings_note="Settings apply to the next import.", close="Close",
     sec_aaf="AAF · OMF", sec_video="Video", sec_list="List", sec_app="Application", audio="Audio",
     aaf_mode_link="Link to source files", aaf_mode_copy="Copy into session",
     aaf_mode_convert="Convert to session format", aaf_mode_consolidate="Consolidate",
     clip_gain="Clip gain", vol_auto="Volume automation", copy_video="Copy referenced video",
-    match_tracks="Merge into tracks with the same name", link_same_name="Same TC for AAF and video with the same name",
+    match_tracks="Shared tracks: same name → same track", link_same_name="Same TC for AAF and video with the same name",
     video_audio="Import audio on the shared track", track="Track",
     ffmpeg_extract="Extract audio with ffmpeg (in parallel)", ffmpeg_absent="ffmpeg missing (brew install ffmpeg)",
     preconvert="Convert as soon as files are added", dual_mono="Dual mono → mono",

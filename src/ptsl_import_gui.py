@@ -6,7 +6,9 @@ paaf_theme.py et paaf_strings.py.
 """
 
 import contextlib
+import copy
 import json
+import time
 import plistlib
 import queue
 import re
@@ -117,6 +119,8 @@ class App(tk.Tk):
         self.current = None
         self.log_lines = []      # [(texte, tag)] : rejoué après un changement de thème / langue
         self.show_log = False
+        self.aaf_open = False
+        self.history, self.h_index, self._h_last = [], -1, 0.0  # [(libellé, état)] : annuler / rétablir
         self.plan_error = False
         self.update_info = None
         self.settings = None
@@ -133,6 +137,7 @@ class App(tk.Tk):
         self.theme_name = "light" if self.prefs.get("theme") == "light" else "dark"
         self.f = th.make_fonts(self)
         self._init_vars()
+        self._commit("h_open")
         self._load_images()
         self._setup_drop_global()
         self._build()
@@ -180,7 +185,7 @@ class App(tk.Tk):
         self.link_var.trace_add("write", lambda *a: sr())
         self.recursive_var = tk.BooleanVar(value=False)
         self.aaf_audio_var = tk.StringVar(value=AAF_AUDIO_MODES[0])
-        self.match_var = tk.BooleanVar(value=False)
+        self.match_var = tk.BooleanVar(value=True)
         self.match_var.trace_add("write", lambda *a: self._on_match())
         self.clip_gain_var = tk.BooleanVar(value=True)
         self.vol_auto_var = tk.BooleanVar(value=True)
@@ -219,6 +224,7 @@ class App(tk.Tk):
         self.configure(bg=self.p["bg"])
         self._view_key = None
         self._build_ui()
+        self._build_menu()
         self._register_drop()
         self._apply_chip()
         self._refresh()
@@ -277,6 +283,12 @@ class App(tk.Tk):
         th.PillButton(self.actions, t("add_folder"), self.add_folder, p, f).pack(side="left", padx=(10, 0))
         self.csv_btn = th.PillButton(self.actions, t("csv_menu"), self._post_csv_menu, p, f, menu=True)
         self.csv_btn.pack(side="left", padx=(10, 0))
+        self.undo_btn = th.PillButton(self.actions, "↶", self.undo, p, f, width=40, font=f.body)
+        self.undo_btn.pack(side="left", padx=(20, 0))
+        self.redo_btn = th.PillButton(self.actions, "↷", self.redo, p, f, width=40, font=f.body)
+        self.redo_btn.pack(side="left", padx=(8, 0))
+        th.Tooltip(self.undo_btn, p, f, lambda: self._h_label(self.h_index, "undo"))
+        th.Tooltip(self.redo_btn, p, f, lambda: self._h_label(self.h_index + 1, "redo"))
         self.import_btn = th.PillButton(self.actions, t("import_btn"), self.start_import, p, f, kind="primary",
                                         font=f.body_b, padx=24, height=42)
         self.import_btn.pack(side="right")
@@ -305,6 +317,8 @@ class App(tk.Tk):
         self.f_step.pack(side="left", padx=(12, 0))
         self.f_gap = th.FieldBox(self.place_bar, t("gap"), self.gap_var, p, f)
         self.f_gap.pack(side="left", padx=(12, 0))
+        for box, key in ((self.f_start, "first_point"), (self.f_step, "spacing"), (self.f_gap, "gap")):
+            box.entry.bind("<FocusOut>", lambda e, k=key: self._commit_field(k), add="+")
         th.PillButton(self.place_bar, t("zoom_all"), lambda: self.timeline.zoom_all(), p, f,
                       font=f.small).pack(side="right")
         th.PillButton(self.place_bar, "+", lambda: self._zoom(2), p, f, width=40,
@@ -317,7 +331,10 @@ class App(tk.Tk):
 
         # timeline
         self.timeline = th.TimelineCanvas(body, p, f, [t("lane_video"), t("lane_aaf"), self._track_name()],
-                                          on_click=self._timeline_click, on_double=self._edit_tc)
+                                          on_click=self._timeline_click, on_double=self._edit_tc,
+                                          callbacks={"toggle": self._tl_toggle, "move": self._tl_move,
+                                                     "lane_toggle": self._tl_lane_toggle, "open": self._tl_open,
+                                                     "can_edit": lambda: not self.busy})
 
         # tableau
         headers = {"num": "#", "tc": t("col_tc"), "type": t("col_type"), "file": t("col_file"),
@@ -382,7 +399,7 @@ class App(tk.Tk):
             self.progress.pack(fill="x", pady=(6, 0))
         if v == "ready":
             self.place_bar.pack(fill="x", pady=(10, 0))
-        self.timeline.configure(height=130 if v in ("import", "result") else 150)
+        self.timeline.configure(height=self._timeline_height())
         self.timeline.pack(fill="x", pady=(16, 0))
         if v == "empty":
             self.drop.pack(fill="both", expand=True, pady=(16, 0))
@@ -620,6 +637,8 @@ class App(tk.Tk):
         self.bind_all("<Command-i>", lambda e: self.open_inspector("file"))
         self.bind_all("<Command-l>", lambda e: self._toggle_log())
         self.bind_all("<Command-comma>", lambda e: self.toggle_settings())
+        self.bind_all("<Command-z>", lambda e: self._undo_key(False))
+        self.bind_all("<Command-Z>", lambda e: self._undo_key(True))
         self.bind("<Escape>", lambda e: self._close_settings())
 
     def _setup_drop_global(self):
@@ -876,6 +895,7 @@ class App(tk.Tk):
 
     def _on_match(self):
         self._refresh_session_tree()
+        self._refresh()
         self.show_inspector()
 
     def _update_prep(self):
@@ -952,6 +972,7 @@ class App(tk.Tk):
             self._touch()
             self.table.sort_col = None
             self.recompute()
+            self._commit("h_add", n=added)
 
     def add_files(self):
         if self.busy:
@@ -998,6 +1019,7 @@ class App(tk.Tk):
         self._touch()
         self.table.sort_col = None
         self.recompute(select=[i + delta for i in idx])
+        self._commit("h_move", n=len(idx))
         return "break"
 
     def move_to(self, idx, target):
@@ -1014,6 +1036,7 @@ class App(tk.Tk):
         self._touch()
         self.table.sort_col = None
         self.recompute(select=list(range(pos, pos + len(moving))))
+        self._commit("h_move", n=len(moving))
 
     def _sort_by(self, key):
         if self.busy or not self.items:
@@ -1032,6 +1055,7 @@ class App(tk.Tk):
         self._touch()
         self.table.sort_col = key
         self.recompute(select=[])
+        self._commit("h_sort")
 
     def sort_items(self):
         self._sort_by("file")
@@ -1047,16 +1071,19 @@ class App(tk.Tk):
         self._touch()
         nxt = min(idx[0], len(self.items) - 1)
         self.recompute(select=[nxt] if nxt >= 0 else [])
+        self._commit("h_remove", n=len(idx))
         self.show_inspector()
         return "break"
 
     def clear_items(self):
         if self.busy:
             return
+        n = len(self.items)
         self.items.clear()
         self._touch()
         self.table.sort_col = None
         self.recompute(select=[])
+        self._commit("h_remove", n=n)
         self.show_inspector()
 
     def _context_menu(self, x, y):
@@ -1149,6 +1176,7 @@ class App(tk.Tk):
             self.items[j]["manual"] = frames
         self._touch()
         self.recompute(select=[i])
+        self._commit("h_tc", f=self.items[i]["path"].name)
         if next_row:
             nxt = max(group) + 1
             if nxt < len(self.items):
@@ -1171,6 +1199,7 @@ class App(tk.Tk):
         self._update_gap_field()
         self._touch()
         self.schedule_recompute()
+        self._commit("h_mode")
 
     def _update_gap_field(self):
         if hasattr(self, "f_gap"):
@@ -1286,6 +1315,11 @@ class App(tk.Tk):
             empty_start = core.TC(self.fps_base).to_frames(self.start_var.get())
         except ValueError:
             empty_start = 3600 * self.fps_base
+        frames = self._plan_frames()
+        self.timeline.set_sub(self._sub_lanes(), self._sub_blocks(frames), self.aaf_open)
+        h = self._timeline_height()
+        if int(self.timeline.cget("height")) != h:
+            self.timeline.configure(height=h)
         self.timeline.set_items(items, fps=self.fps_base, playhead=playhead, empty_start=empty_start)
 
     def _rows(self):
@@ -1325,12 +1359,245 @@ class App(tk.Tk):
             folder = str(path.parent)
             if folder.startswith(home):
                 folder = "~" + folder[len(home):]
+            if not state and self._aaf_tracks(i) and self._layout_changed(i):
+                state, state_color = t("st_layout"), p["txt2"]
             rows.append({
                 "num": i + 1, "tc": it["tc"] or "", "linked": len(group_of.get(i, [])) > 1,
                 "kind": ("AAF" if path.suffix.lower() == ".aaf" else "OMF") if k == "aaf" else t("kind_video"),
                 "kind_color": p["aaf"] if k == "aaf" else p["vid"], "name": path.name, "name_color": name_color,
                 "dur": dur, "folder": folder, "state": state, "state_color": state_color})
         return rows
+
+    # ------------------------------------------------------------------ pistes des AAF (timeline)
+    def _aaf_tracks(self, i):
+        """Pistes de l'AAF (aperçu pyaaf2), ou None (OMF, vidéo, analyse en cours…)."""
+        if i >= len(self.items):
+            return None
+        p = self.items[i]["path"]
+        if core.kind_of(p) != "aaf":
+            return None
+        m = self.meta.get(p)
+        if not isinstance(m, dict) or m.get("error") or not m.get("tracks"):
+            return None
+        return [tr for tr in m["tracks"] if tr["kind"] in ("Sound", "Picture")]
+
+    def _tcfg(self, i, j):
+        """Réglage d'une piste d'AAF : importée ou non, et piste commune (par défaut son nom)."""
+        tr = self._aaf_tracks(i)[j]
+        cfg = (self.items[i].get("tracks") or {}).get(j) or {}
+        return {"on": cfg.get("on", True), "lane": cfg.get("lane", tr["name"])}
+
+    def _set_tcfg(self, i, j, **kw):
+        cfg = self.items[i].setdefault("tracks", {}).setdefault(j, {})
+        cfg.update(kw)
+
+    def _layout_changed(self, i):
+        tracks = self._aaf_tracks(i) or []
+        return any(not self._tcfg(i, j)["on"] or self._tcfg(i, j)["lane"] != tr["name"]
+                   for j, tr in enumerate(tracks))
+
+    def _layout_for_engine(self, i):
+        tracks = self._aaf_tracks(i)
+        if not tracks:
+            return None, False
+        tc = core.TC(self.fps_base)
+        m = self.meta.get(self.items[i]["path"]) or {}
+        try:
+            end = tc.to_tc(tc.to_frames(self.items[i]["tc"]) + round(((m.get("duration_s") or 0) + 2) * self.fps_base))
+        except (ValueError, TypeError):
+            end = self.items[i]["tc"]
+        out = []
+        for j, tr in enumerate(tracks):
+            c = self._tcfg(i, j)
+            out.append({"name": tr["name"], "kind": tr["kind"], "on": c["on"], "lane": c["lane"],
+                        "explicit": c["lane"] != tr["name"], "end": end})
+        return out, self._layout_changed(i)
+
+    def _sub_lanes(self):
+        """Pistes communes de tous les AAF : [(nom, type)], images d'abord, ordre d'apparition."""
+        seen = {}
+        for i in range(len(self.items)):
+            for j, tr in enumerate(self._aaf_tracks(i) or []):
+                seen.setdefault((tr["kind"] != "Picture", self._tcfg(i, j)["lane"]), tr["kind"])
+        order = sorted(seen, key=lambda k: (k[0], core.natural_key(Path(k[1]))))
+        return [(name, seen[(snd, name)]) for snd, name in order]
+
+    def _sub_blocks(self, frames):
+        """Blocs de la timeline : une piste d'un AAF placée à son point d'entrée."""
+        starts = {i: s for i, s, _ in frames}
+        blocks = []
+        for i in range(len(self.items)):
+            tracks = self._aaf_tracks(i)
+            if not tracks or i not in starts:
+                continue
+            m = self.meta.get(self.items[i]["path"]) or {}
+            rate = float(m["edit_rate"]) if m.get("edit_rate") else self.fps_base
+            k = self.fps_base / rate
+            st = "missing" if not self.items[i]["path"].exists() else self.states.get(i) or "plan"
+            for j, tr in enumerate(tracks):
+                c = self._tcfg(i, j)
+                clips = [(starts[i] + cl["pos"] * k, starts[i] + (cl["pos"] + cl["length"]) * k)
+                         for cl in tr["clips"]]
+                blocks.append({"key": (i, j), "lane": c["lane"], "kind": tr["kind"], "on": c["on"],
+                               "state": st, "clips": clips,
+                               "label": tr["name"] if c["lane"] != tr["name"] else ""})
+        return blocks
+
+    def _tl_toggle(self, keys):
+        """Clic dans la timeline : importer / ne pas importer (toute la sélection d'un coup)."""
+        if self.busy or not keys:
+            return
+        on = not all(self._tcfg(i, j)["on"] for i, j in keys)
+        for i, j in keys:
+            self._set_tcfg(i, j, on=on)
+        self._touch()
+        self._refresh()
+        self._commit("h_tracks_on" if on else "h_tracks_off", n=len(keys))
+
+    def _tl_lane_toggle(self, lane):
+        self._tl_toggle([b["key"] for b in self._sub_blocks(self._plan_frames()) if b["lane"] == lane])
+
+    def _tl_move(self, keys, lane):
+        """Glisser un bloc sur une autre sous-piste : la piste de l'AAF rejoint cette piste commune."""
+        if self.busy:
+            return
+        moved = False
+        for i, j in keys:
+            tr = self._aaf_tracks(i)[j]
+            # deux pistes d'un même AAF sur la même piste commune : la seconde écrase la première
+            for k, o in enumerate(self._aaf_tracks(i)):
+                if k != j and self._tcfg(i, k)["lane"] == lane and self._tcfg(i, k)["on"] \
+                        and self._overlaps(tr, o):
+                    self.write_log(self.t("log_overlap", a=tr["name"], b=o["name"], lane=lane), "warn")
+            self._set_tcfg(i, j, lane=lane, on=True)
+            moved = True
+        if moved:
+            self._touch()
+            self._refresh()
+            self._commit("h_tracks_move", n=len(keys), lane=lane)
+
+    # ------------------------------------------------------------------ historique (annuler / rétablir)
+    def _snapshot(self):
+        return {"items": copy.deepcopy([{k: it[k] for k in ("path", "tc", "manual", "tracks") if k in it}
+                                        for it in self.items]),
+                "mode": self.mode_var.get(), "start": self.start_var.get(), "step": self.step_var.get(),
+                "gap": self.gap_var.get()}
+
+    def _commit(self, key, **kw):
+        """Enregistre l'état du plan après une modification (libellé traduit à l'affichage)."""
+        state = self._snapshot()
+        if self.history and self.h_index >= 0 and self.history[self.h_index][1] == state:
+            return
+        del self.history[self.h_index + 1:]
+        self.history.append(((key, kw), state))
+        if len(self.history) > 200:
+            del self.history[0]
+        self.h_index = len(self.history) - 1
+        self._update_history_ui()
+
+    def _commit_field(self, key):
+        if self.history and self.h_index >= 0:
+            prev = self.history[self.h_index][1]
+            cur = self._snapshot()
+            if (prev["start"], prev["step"], prev["gap"]) != (cur["start"], cur["step"], cur["gap"]):
+                self.recompute()
+                self._commit("h_field", f=self.t(key))
+
+    def _restore(self, state):
+        self._close_editor(commit=False)
+        self.items = copy.deepcopy(state["items"])
+        for var, k in ((self.mode_var, "mode"), (self.start_var, "start"), (self.step_var, "step"),
+                       (self.gap_var, "gap")):
+            if var.get() != state[k]:
+                var.set(state[k])
+        self.result, self.states = None, {}
+        for it in self.items:
+            self._load_meta(it["path"])
+        self._update_gap_field()
+        self.table.sort_col = None
+        self.recompute(select=[])
+        self.show_inspector()
+
+    def _goto(self, index):
+        if self.busy or not (0 <= index < len(self.history)) or index == self.h_index:
+            return
+        self.h_index = index
+        self._restore(self.history[index][1])
+        self._update_history_ui()
+
+    def undo(self):
+        self._goto(self.h_index - 1)
+
+    def redo(self):
+        self._goto(self.h_index + 1)
+
+    def _undo_key(self, redo):
+        # le menu Édition (raccourci clavier) et la touche peuvent arriver tous les deux
+        now = time.monotonic()
+        if now - self._h_last < 0.15:
+            return "break"
+        self._h_last = now
+        if isinstance(self.focus_get(), tk.Entry):
+            self.focus_set()  # valide d'abord le champ en cours d'édition
+            self.update_idletasks()
+        self.redo() if redo else self.undo()
+        return "break"
+
+    def _h_label(self, index, verb):
+        if not 0 < index < len(self.history):
+            return ""
+        (key, kw), _ = self.history[index]
+        return self.t(verb + "_label", a=self._h_text(key, kw))
+
+    def _h_text(self, key, kw):
+        return self.tn(key, kw["n"], **{k: v for k, v in kw.items() if k != "n"}) if "n" in kw else self.t(key, **kw)
+
+    def _build_menu(self):
+        bar = tk.Menu(self)
+        self.edit_menu = tk.Menu(bar, tearoff=False)
+        bar.add_cascade(label=self.t("menu_edit"), menu=self.edit_menu)
+        self.configure(menu=bar)
+        self._update_history_ui()
+
+    def _update_history_ui(self):
+        if not hasattr(self, "edit_menu"):
+            return
+        t = self.t
+        can_undo, can_redo = self.h_index > 0, self.h_index < len(self.history) - 1
+        m = self.edit_menu
+        m.delete(0, "end")
+        m.add_command(label=self._h_label(self.h_index, "undo") or t("undo"), accelerator="Command-Z",
+                      command=self.undo, state="normal" if can_undo and not self.busy else "disabled")
+        m.add_command(label=self._h_label(self.h_index + 1, "redo") or t("redo"), accelerator="Shift-Command-Z",
+                      command=self.redo, state="normal" if can_redo and not self.busy else "disabled")
+        m.add_separator()
+        hm = tk.Menu(m, tearoff=False)
+        first = max(0, len(self.history) - 40)
+        for k in range(len(self.history) - 1, first - 1, -1):
+            (key, kw), _ = self.history[k]
+            hm.add_command(label=("✓ " if k == self.h_index else "    ") + self._h_text(key, kw),
+                           command=lambda k=k: self._goto(k))
+        m.add_cascade(label=t("menu_history"), menu=hm)
+        with contextlib.suppress(tk.TclError, AttributeError):
+            self.undo_btn.set_enabled(can_undo and not self.busy)
+            self.redo_btn.set_enabled(can_redo and not self.busy)
+
+    def _tl_open(self):
+        self.aaf_open = not self.aaf_open
+        self._refresh()
+
+    @staticmethod
+    def _overlaps(tr, target):
+        """Nombre de clips de `tr` qui chevauchent un clip de `target` (ils le remplaceront)."""
+        spans = [(c["pos"], c["pos"] + c["length"]) for c in target["clips"]]
+        return sum(1 for c in tr["clips"]
+                   if any(c["pos"] < e and s < c["pos"] + c["length"] for s, e in spans))
+
+    def _timeline_height(self):
+        v = self._view()
+        base = 130 if v in ("import", "result") else 150
+        lanes = self._sub_lanes() if self.aaf_open else []
+        return max(base, th.TimelineCanvas.height_for(len(lanes))) if lanes else base
 
     def _refresh(self, select=None):
         if not hasattr(self, "table"):
@@ -1624,6 +1891,7 @@ class App(tk.Tk):
         self._update_gap_field()
         self._touch()
         self.recompute(select=[])
+        self._commit("h_csv")
 
     def export_csv(self):
         if not self.items:
@@ -1638,6 +1906,7 @@ class App(tk.Tk):
     def _set_busy(self, busy):
         self.busy = busy
         self._close_settings()
+        self._update_history_ui()
         if busy:
             self._pulse()
         self._refresh()
@@ -1709,7 +1978,7 @@ class App(tk.Tk):
                 return
         for i in todo:
             self.states[i] = "pending"
-        plan = [(i, self.items[i]["path"], self.items[i]["tc"]) for i in todo]
+        plan = [(i, self.items[i]["path"], self.items[i]["tc"]) + self._layout_for_engine(i) for i in todo]
         self.result = None
         self.current = None
         self.cancel_flag.clear()
@@ -1725,8 +1994,8 @@ class App(tk.Tk):
         try:
             with contextlib.redirect_stdout(QueueWriter(self.q)), core.connect() as engine:
                 state = core.VideoAudioState(args.audio_track, prep)
-                core.start_audio_extraction(engine, [(p, t) for _, p, t in plan], args, state)
-                for i, p, t in plan:
+                core.start_audio_extraction(engine, [(p, t) for _, p, t, _, _ in plan], args, state)
+                for i, p, t, layout, apply in plan:
                     if self.cancel_flag.is_set():
                         self.q.put(("log", self.t("log_cancelled"), "err"))
                         reason = "cancel"
@@ -1734,7 +2003,7 @@ class App(tk.Tk):
                     self.q.put(("current", i))
                     self.q.put(("log", f"… {t}  {p.name}", "cur"))
                     try:
-                        core.import_one(engine, p, t, args, state)
+                        core.import_one(engine, p, t, args, state, layout, apply)
                         ok += 1
                         self.q.put(("log", f"✓ {t}  {p.name}", "ok"))
                         self.q.put(("item", i, "done"))

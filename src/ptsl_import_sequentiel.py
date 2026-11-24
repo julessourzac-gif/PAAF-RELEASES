@@ -73,6 +73,21 @@ class CId_SpotClipsByID(Operation):
     pass
 
 
+class CId_DeleteTracks(Operation):
+    # py-ptsl envoie aussi les champs vides : Pro Tools refuse track_ids ET track_names.
+    def json_messup(self, in_json):
+        import json
+        data = json.loads(in_json)
+        for key in ("track_ids", "track_names"):
+            if not data.get(key):
+                data.pop(key, None)
+        return json.dumps(data)
+
+
+class CId_SetEditModeOptions(Operation):
+    pass
+
+
 # ------------------------------------------------------------------ timecode
 
 def _rate(name, base, real, drop=False):
@@ -317,7 +332,7 @@ def _is_location_error(e) -> bool:
 
 # ------------------------------------------------------------------ PTSL : AAF
 
-def import_aaf(engine, path: Path, tc: str, args):
+def import_aaf(engine, path: Path, tc: str, args, layout=None, apply_layout=False):
     """Import Session Data d'un AAF/OMF : toutes les pistes (nouvelles pistes, ou fusion
     avec les pistes de même nom de la session), avec clips et médias (sans clips_and_media,
     Pro Tools crée des pistes vides), gain de clip et automation de volume, calé sur le TC."""
@@ -334,7 +349,10 @@ def import_aaf(engine, path: Path, tc: str, args):
         audio_options=audio_opt,
         audio_handle_size=args.handles,
         video_options=pt.CopyFromSourceVideo if args.copy_video else pt.LinkToSourceVideo,
-        match_options=pt.MT_MatchTracks if getattr(args, "match_tracks", False) else pt.MT_ImportAsNewTrack,
+        # Avec une répartition des pistes modifiée, on importe toujours en nouvelles pistes :
+        # les fusions sont faites ensuite, piste par piste.
+        match_options=pt.MT_MatchTracks if getattr(args, "match_tracks", False) and not apply_layout
+        else pt.MT_ImportAsNewTrack,
         playlist_options=pt.ImportOverlayNewOnExistingPlaylists,
         track_data_to_import=pt.TrackDataToImport(
             clips_and_media=True,
@@ -350,7 +368,188 @@ def import_aaf(engine, path: Path, tc: str, args):
         import_type=pt.Session,
         session_data=session_data,
     )
+    before = _tracks(engine)
+    before_ids = {t.id for t in before}
     engine.client.run(op)
+    created = [t for t in _tracks(engine) if t.id not in before_ids]
+    _report_created(created, layout, matched=session_data.match_options == pt.MT_MatchTracks)
+    if layout and apply_layout:
+        apply_aaf_layout(engine, created, before, layout, tc, match=getattr(args, "match_tracks", False))
+
+
+# ------------------------------------------------------------------ AAF : pistes après import
+
+def _tracks(engine):
+    try:
+        return list(engine.track_list())
+    except Exception:
+        return []
+
+
+def _track_ids(engine):
+    return {t.id for t in _tracks(engine)}
+
+
+def _report_created(created, layout, matched=False):
+    """Journal : pistes créées par l'import (diagnostic des imports sans audio)."""
+    audio = [t for t in created if t.type == pt.TT_Audio]
+    video = [t for t in created if t.type == pt.TT_Video]
+    names = ", ".join(t.name for t in created[:12]) + (" …" if len(created) > 12 else "")
+    print(f"  pistes créées : {len(audio)} audio, {len(video)} vidéo" + (f" ({names})" if created else ""))
+    empty = [t.name for t in audio if not t.track_attributes.contains_clips]
+    if empty:
+        print(f"! pistes audio créées sans clips : {', '.join(empty[:8])}"
+              " (médias introuvables ou non copiés ?)")
+    expected = sum(1 for tr in (layout or []) if tr["kind"] == "Sound")
+    if expected and not audio and not matched:
+        print(f"! aucune piste audio créée alors que l'AAF en contient {expected}")
+
+
+def map_aaf_tracks(created, layout):
+    """Associe chaque piste de l'AAF (ordre du fichier) à une piste créée par Pro Tools :
+    même nom (éventuellement suffixé par Pro Tools), sinon dans l'ordre, par type."""
+    kinds = {"Sound": pt.TT_Audio, "Picture": pt.TT_Video}
+    pool = {k: [t for t in sorted(created, key=lambda t: t.index) if t.type == v] for k, v in kinds.items()}
+    mapping = {}
+    for want_exact in (True, False):
+        for i, tr in enumerate(layout):
+            if i in mapping or tr["kind"] not in pool:
+                continue
+            cands = pool[tr["kind"]]
+            if want_exact:
+                pat = re.compile(re.escape(tr["name"]) + r"(\.\d+|\.dup\d+| \d+)?$")
+                hit = next((t for t in cands if pat.match(t.name)), None)
+            else:
+                hit = cands[0] if cands else None
+            if hit is not None:
+                mapping[i] = hit
+                cands.remove(hit)
+    return mapping
+
+
+def _select_range(engine, track_name, tc_in, tc_out):
+    engine.select_tracks_by_name([track_name])
+    engine.set_timeline_selection(in_time=tc_in, out_time=tc_out)
+
+
+class _EditContext:
+    """Pendant les fusions : sélection liée à la piste et à la timeline, mode Slip.
+    Les réglages de l'utilisateur sont rétablis ensuite."""
+
+    def __init__(self, engine):
+        self.engine, self.mode, self.options = engine, None, None
+
+    def __enter__(self):
+        e = self.engine
+        try:
+            self.mode = e.get_edit_mode().current_setting
+            op = ops.CId_GetEditModeOptions()
+            e.client.run(op)
+            self.options = op.response.edit_mode_options
+            opts = pt.EditModeOptions()
+            opts.CopyFrom(self.options)
+            opts.link_timeline_and_edit_selection = True
+            opts.link_track_and_edit_selection = True
+            e.client.run(CId_SetEditModeOptions(edit_mode_options=opts))
+            if self.mode != pt.EMO_Slip:
+                e.set_edit_mode(pt.EMO_Slip)
+        except Exception as ex:
+            print(f"! réglages d'édition non modifiés ({ex})")
+        return self
+
+    def __exit__(self, *exc):
+        e = self.engine
+        try:
+            if self.options is not None:
+                e.client.run(CId_SetEditModeOptions(edit_mode_options=self.options))
+            if self.mode is not None and self.mode != pt.EMO_Slip:
+                e.set_edit_mode(self.mode)
+        except Exception as ex:
+            print(f"! réglages d'édition non rétablis ({ex}) : vérifie Link Track and Edit Selection")
+        return False
+
+
+def apply_aaf_layout(engine, created, before, layout, tc, match=False):
+    """Après l'import d'un AAF en nouvelles pistes : chaque piste de l'AAF rejoint sa piste
+    commune (« lane », par défaut son nom). Si une piste de ce nom existait déjà (import d'un
+    AAF précédent ou session), le contenu y est coupé / collé au même TC et la piste créée est
+    retirée ; sinon la piste créée prend ce nom. Les pistes décochées sont retirées.
+    layout : [{"name", "kind", "on", "lane", "explicit", "end"}]
+    explicit : la piste a été déplacée vers une autre piste commune par l'utilisateur. Sans
+    l'option « pistes communes » (match), seules ces pistes-là sont fusionnées."""
+    mapping = map_aaf_tracks(created, layout)
+    pre = {t.name: t for t in before}
+    owner, merges, renames, to_delete = {}, [], [], []
+    for i, tr in enumerate(layout):
+        src = mapping.get(i)
+        if src is None:
+            print(f"! piste « {tr['name']} » introuvable après l'import : laissée telle quelle")
+            continue
+        if not tr["on"]:
+            to_delete.append(src)
+            continue
+        lane = tr.get("lane") or tr["name"]
+        common = match or tr.get("explicit")
+        if tr["kind"] == "Picture" and not tr.get("explicit"):
+            lane = src.name  # piste vidéo : Pro Tools la nomme lui-même (V1…), on la laisse
+        if common and lane in pre and pre[lane].type == src.type and pre[lane].id != src.id:
+            merges.append((tr, src, pre[lane]))
+        elif lane in owner:
+            merges.append((tr, src, owner[lane]))
+        else:
+            owner[lane] = src
+            if (tr.get("explicit") or common and tr["kind"] == "Sound") and src.name != lane and lane not in pre:
+                renames.append((src, lane))
+    if merges:
+        with _EditContext(engine):
+            for tr, src, dst in merges:
+                if _merge_one(engine, tr, src, dst, tc):
+                    to_delete.append(src)
+    _delete_tracks(engine, to_delete)
+    for src, lane in renames:
+        try:
+            engine.rename_target_track(src.name, lane)
+            print(f"  ⇢ « {src.name} » renommée « {lane} »")
+        except Exception as e:
+            print(f"! « {src.name} » non renommée en « {lane} » ({e})")
+
+
+def _merge_one(engine, tr, src, dst, tc):
+    """Coupe le contenu de `src` (durée de l'AAF) et le colle au même TC sur `dst`."""
+    if dst.format != src.format:
+        print(f"! « {tr['name']} » → « {dst.name} » : formats différents (mono / stéréo), non fusionnée")
+        return False
+    try:
+        _select_range(engine, src.name, tc, tr["end"])
+        engine.cut()
+    except Exception as e:
+        print(f"! « {tr['name']} » → « {dst.name} » : fusion impossible ({e})")
+        return False
+    try:
+        _select_range(engine, dst.name, tc, tc)
+        engine.paste()
+    except Exception as e:
+        print(f"! « {tr['name']} » → « {dst.name} » : collage impossible ({e})")
+        try:  # on remet le contenu coupé sur sa piste d'origine
+            _select_range(engine, src.name, tc, tc)
+            engine.paste()
+        except Exception as e2:
+            print(f"✗ « {tr['name']} » : contenu coupé non recollé ({e2}) — Édition > Annuler dans Pro Tools")
+        return False
+    print(f"  ⇢ « {tr['name']} » → piste « {dst.name} »")
+    return True
+
+
+def _delete_tracks(engine, to_delete):
+    if to_delete:
+        try:
+            engine.client.run(CId_DeleteTracks(
+                track_ids=[t.id for t in to_delete],
+                delete_track_behavior_options=pt.DeleteTrackBehaviorOptions(
+                    keep_folder_members=True, keep_alternate_playlists=False, coalesce_automation=False)))
+            print(f"  ⇢ pistes retirées : {', '.join(t.name for t in to_delete)}")
+        except Exception as e:
+            print(f"! suppression des pistes impossible ({e}) : {', '.join(t.name for t in to_delete)}")
 
 
 # ------------------------------------------------------------------ session
@@ -952,12 +1151,12 @@ def import_video(engine, path: Path, tc: str, args, state):
         import_video_audio(engine, path, tc, state)
 
 
-def import_one(engine, path: Path, tc: str, args, state):
+def import_one(engine, path: Path, tc: str, args, state, layout=None, apply_layout=False):
     if not path.exists():
         raise FileNotFoundError("fichier introuvable")
     k = kind_of(path)
     if k == "aaf":
-        import_aaf(engine, path, tc, args)
+        import_aaf(engine, path, tc, args, layout, apply_layout)
     elif k == "video":
         import_video(engine, path, tc, args, state)
     else:

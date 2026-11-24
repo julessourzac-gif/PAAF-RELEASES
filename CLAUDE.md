@@ -27,9 +27,15 @@ Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en fran�
     Replis : ConvertAudio sur le WAV, puis extraction par Pro Tools depuis la vidéo.
   - `schedule` / `link_groups` : un AAF et une vidéo de même nom (`pair_key`) partagent un TC.
   - AAF : `match_tracks` -> `MT_MatchTracks` (fusion dans les pistes de même nom).
-- `src/ptsl_import_gui.py` : interface Tkinter (thème clam sombre), glisser-déposer via
-  `tkinterdnd2`, `::tk::mac::OpenDocument` pour les dépôts sur l'icône. Accepte des chemins en
-  arguments. Onglets : inspecteur, pistes de la session, journal.
+- `src/ptsl_import_gui.py` : interface Tkinter (maquettes 1a, style MixCheck), glisser-déposer
+  via `tkinterdnd2`, `::tk::mac::OpenDocument` pour les dépôts sur l'icône. Accepte des chemins
+  en arguments. Vues selon l'état (`_view` : empty / ready / import / result) ; un changement de
+  thème ou de langue reconstruit toute l'interface (`_rebuild`), les variables Tk survivent.
+  Inspecteur et pistes de la session dans une fenêtre à part. Préférences (thème, langue,
+  mises à jour) dans `~/Library/Application Support/PAAF/prefs.json`.
+- `src/paaf_theme.py` : palettes DARK / LIGHT, polices (tailles en pixels), widgets dessinés sur
+  Canvas (boutons, interrupteurs, segmenté, champs, timeline, tableau du plan `PlanTable`).
+- `src/paaf_strings.py` : tous les textes, FR et EN (clés `_one` / `_other` pour les pluriels).
 - `src/aaf_inspect.py` : lecture des AAF avec pyaaf2 (pistes, clips, médias, métadonnées).
 - `macos/make_icon.py` : génère `macos/AppIcon.icns` et `src/assets/logo_*.png` (Pillow).
 - `macos/launcher` : lanceur bash auto-installant. Crée le venv dans

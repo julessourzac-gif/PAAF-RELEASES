@@ -1,5 +1,31 @@
 # Historique des versions
 
+## 1.4
+- Nouvelle interface (maquettes 1a « Liste d'abord ») : en-tête avec pastille de session,
+  titre d'état (vide, prêt, import en cours, bilan), barre de placement à contrôle segmenté,
+  timeline en trois pistes (vidéo, AAF / OMF, audio des vidéos) avec zoom, tableau du plan
+  avec colonne d'état, journal pendant et après l'import.
+- Thèmes sombre et clair (icône soleil), interface en français ou en anglais ; choix enregistrés.
+- Panneau Réglages (⌘,) : options AAF / OMF, vidéo, liste et application.
+- Tableau : glisser une ligne pour réordonner, ⌥↑ / ⌥↓, ⌫, ↩ ou double-clic pour le point
+  d'entrée, clic droit pour le menu ; clic sur un en-tête pour trier.
+- Inspecteur et pistes de la session dans une fenêtre à part (⌘I, ou clic sur la session).
+- Après un import : « Reprendre » relance les fichiers en échec ou non traités ; export du journal.
+- Les fichiers introuvables sont écartés de l'import au lieu d'échouer un à un.
+- Vérification facultative des mises à jour au lancement (releases GitHub).
+- AAF dans la timeline : la piste AAF / OMF se déplie (▸) en une sous-piste par piste commune
+  (« Audio 1 »…). L'« Audio 1 » de chaque AAF va sur une seule piste Pro Tools (option « Pistes
+  communes », activée par défaut). Clic sur un bloc : importer ou non (⌘ / ⇧ : plusieurs) ;
+  clic sur le nom d'une sous-piste : toute la sous-piste ; glisser un bloc sur une autre
+  sous-piste : il la rejoint. Après l'import, PAAF coupe / colle au même TC, renomme ou retire
+  les pistes (liens de sélection et mode Slip activés le temps de l'opération, puis rétablis).
+- Historique : annuler / rétablir les modifications du plan (⌘Z / ⇧⌘Z, boutons ↶ ↷, menu
+  Édition > Historique pour revenir à une étape).
+- Défilement au trackpad et à la molette dans la liste et la timeline ; ⌥ + défilement : zoom.
+- Nouvelle icône d'application, d'après le logo PAAF.
+- Journal : pistes créées par chaque import AAF, avec alerte si aucune piste audio n'est créée.
+
+
 ## 1.3
 - L'application s'appelle désormais **PAAF**, avec un nouveau logo.
 - Nouvelle interface : thème sombre, état de la session en en-tête, inspecteur, pistes de la

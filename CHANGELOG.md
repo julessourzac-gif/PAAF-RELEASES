@@ -23,7 +23,7 @@
   ancienne et nouvelle version. Tous les clips image et son servent de repères (média source +
   TC source) : liste des passages inchangés, déplacés, nouveaux et supprimés, vue des deux
   versions reliées, rapport CSV, marqueurs posés dans la session.
-- Versions, étape 2 (expérimental, pas encore validé dans Pro Tools) : « Appliquer à une copie » enregistre une copie de la session, recopie
+- Versions, étape 2 (validée sur un décalage global ; à confirmer sur des montages plus remaniés) : « Appliquer à une copie » enregistre une copie de la session, recopie
   chaque morceau gardé (toutes pistes, automation comprise) à sa nouvelle place, range les
   passages supprimés après la fin, pose des marqueurs et importe la nouvelle version sur des
   pistes guides pour compléter les passages nouveaux.

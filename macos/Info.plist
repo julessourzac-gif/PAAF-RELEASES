@@ -5,7 +5,7 @@
   <key>CFBundleName</key><string>PAAF</string>
   <key>CFBundleDisplayName</key><string>PAAF</string>
   <key>CFBundleIdentifier</key><string>io.bernik.paaf</string>
-  <key>CFBundleExecutable</key><string>launcher</string>
+  <key>CFBundleExecutable</key><string>PAAF</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>@VERSION@</string>

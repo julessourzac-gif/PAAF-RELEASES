@@ -1,15 +1,13 @@
 PAAF — installation
 ===================
 
-1. Double-cliquer sur le .zip (déjà fait si vous lisez ceci).
-2. Glisser « PAAF » dans le dossier Applications.
+1. Ouvrir le .dmg (ou le .zip) puis glisser « PAAF » dans le dossier Applications.
    (L'ancienne version s'appelait « Import Pro Tools » : vous pouvez la supprimer.)
-3. Premier lancement : clic droit sur l'app > Ouvrir.
-   Si macOS bloque l'ouverture (« développeur non identifié ») :
-     Réglages Système > Confidentialité et sécurité > « Ouvrir quand même »
-   ou, dans le Terminal :
-     xattr -dr com.apple.quarantine "/Applications/PAAF.app"
-4. Au premier lancement, l'app prépare son environnement (1 à 2 min, connexion
+2. Lancer PAAF. L'application est signée et notarisée par Apple : elle s'ouvre
+   normalement. Avec une version non signée (build de développement), faire
+   clic droit sur l'app > Ouvrir, ou Réglages Système > Confidentialité et
+   sécurité > « Ouvrir quand même ».
+3. Au premier lancement, l'app prépare son environnement (1 à 2 min, connexion
    Internet requise) et propose d'installer via Homebrew ce qui manque :
    Tkinter (interface) et ffmpeg (conversion rapide de l'audio des vidéos).
 

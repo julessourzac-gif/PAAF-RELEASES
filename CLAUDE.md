@@ -51,7 +51,10 @@ Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en fran�
   `CopyFromSourceMedia` (Link échoue sur des médias embarqués).
   La timeline Pro Tools n'est pas lisible clip par clip par PTSL (API privée).
 - `macos/make_icon.py` : génère `macos/AppIcon.icns` et `src/assets/logo_*.png` (Pillow).
-- `macos/launcher` : lanceur bash auto-installant. Crée le venv dans
+- `macos/stub.c` : exécutable compilé de l'app (`Contents/MacOS/PAAF`, universel arm64 + x86_64),
+  qui lance `Contents/Resources/launcher` avec /bin/bash. Un vrai binaire est nécessaire pour la
+  signature avec hardened runtime et la notarisation (un script en exécutable principal se signe mal).
+- `macos/launcher` (copié dans `Contents/Resources`) : lanceur bash auto-installant. Crée le venv dans
   `~/Library/Application Support/PAAF/env` (reprend l'ancien dossier « Import Pro Tools ») ;
   `DEPS_VERSION` à incrémenter uniquement si les dépendances Python changent. `@VERSION@` est remplacé par `build.sh`.
 - `macos/Info.plist` : `@VERSION@` / `@BUILD@` remplacés au build.
@@ -59,6 +62,16 @@ Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en fran�
 ## Build et release
 
 - `./build.sh` → `dist/PAAF.app` et `dist/PAAF_v<VERSION>.zip`.
+- `./sign_notarize.sh` (sur le Mac du propriétaire) : build, signature Developer ID « BERNIK
+  (S3X8746BP3) » avec hardened runtime, notarisation de l'app puis du DMG (`notarytool`, profil
+  trousseau `PAAF`), agrafage, contrôle `spctl` → `dist/PAAF_v<VERSION>.dmg` (+ zip signé).
+  `--sign-only` : sans envoi à Apple. Le profil se crée une fois par le propriétaire :
+  `xcrun notarytool store-credentials PAAF --apple-id … --team-id S3X8746BP3` (ne jamais saisir
+  son mot de passe à sa place). Le DMG signé est ensuite joint à la release à la main (`gh release
+  upload`) ; le workflow GitHub ne fait qu'un build non signé.
+  Ordre pour une release signée : PR fusionnée → `./sign_notarize.sh` → `gh release create vX.Y
+  dist/PAAF_vX.Y.dmg dist/PAAF_vX.Y.zip --target main --notes-file …`. Le workflow, déclenché
+  ensuite, voit que la release a déjà des fichiers et n'y joint pas son build non signé.
 - Version unique dans `VERSION` ; notes dans `CHANGELOG.md` (`## X.Y`).
 - Release : tag `vX.Y` poussé, ou release publiée depuis github.com → `.github/workflows/release.yml`
   (macos-latest) vérifie tag = VERSION, construit et joint le zip (crée la release si absente).
@@ -74,4 +87,5 @@ Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en fran�
   Pro Tools tourne souvent (PTSL sur localhost:31416) : lecture libre, mais demander avant
   toute écriture dans la session ouverte.
 - OMF : pas d'aperçu (pyaaf2 ne lit que l'AAF).
-- Application non signée ni notarisée (Gatekeeper : clic droit > Ouvrir).
+- Les builds de la CI (workflow) ne sont pas signés : seule la distribution faite avec
+  `sign_notarize.sh` l'est.

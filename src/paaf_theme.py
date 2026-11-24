@@ -1327,3 +1327,162 @@ class DropZone(tk.Canvas):
         y += sh + 26
         if self.extra:
             self.create_window(cx, y, window=self.extra, anchor="n")
+
+
+# --------------------------------------------------------------------------- versions de montage
+class ConformCanvas(tk.Canvas):
+    """Deux pistes, ANCIENNE / NOUVELLE : morceaux retrouvés (reliés d'une version à l'autre),
+    passages nouveaux (ambre) et supprimés (rouge). changes : objets conform.Change."""
+
+    LABEL_W, PAD = 118, 14
+
+    def __init__(self, master, p, f, labels, on_click=None):
+        super().__init__(master, highlightthickness=0, bd=0, bg=_parent_bg(master, p["bg"]), height=190)
+        self.p, self.f, self.labels, self.on_click = p, f, labels, on_click
+        self.changes, self.total, self.sel, self.boxes = [], 1, None, []
+        self.bind("<Configure>", lambda e: self.redraw())
+        self.bind("<Button-1>", self._click)
+
+    def set(self, changes, total, sel=None):
+        self.changes, self.total, self.sel = changes, max(1, total), sel
+        self.redraw()
+
+    def _click(self, e):
+        for x1, y1, x2, y2, n in reversed(self.boxes):
+            if x1 <= e.x <= x2 and y1 <= e.y <= y2 and self.on_click:
+                self.on_click(n)
+                return
+
+    def redraw(self):
+        self.delete("all")
+        self.boxes = []
+        p, f = self.p, self.f
+        w, h = self.winfo_width(), self.winfo_height()
+        if w < 200 or h < 80:
+            return
+        round_rect(self, 0, 0, w, h, 12, fill=p["well"], outline="")
+        x0, x1 = self.PAD + self.LABEL_W, w - self.PAD
+        lane_h = 34
+        y_old, y_new = 22, h - 22 - lane_h
+        X = lambda fr: x0 + fr / (self.total * 1.02) * (x1 - x0)  # noqa: E731
+        for y, label in ((y_old, self.labels[0]), (y_new, self.labels[1])):
+            self.create_text(self.PAD, y + lane_h / 2, text=fit(f.cap, caps(label), self.LABEL_W - 8), anchor="w",
+                             fill=p["txt3"], font=f.cap)
+            round_rect(self, x0, y, x1, y + lane_h, 6, fill=p["lane"], outline="")
+        palette = [p["aaf"], p["vid"], p["vaud"], mix(p["aaf"], p["vid"], .5), mix(p["vaud"], p["aaf"], .5)]
+        k = 0
+        for n, ch in enumerate(self.changes):
+            sel = n == self.sel
+            outline = p["txt"] if sel else ""
+            if ch.kind in ("same", "move"):
+                col = mix(p["txt3"], p["lane"], .55) if ch.kind == "same" else palette[k % len(palette)]
+                k += ch.kind == "move"
+                a, b = X(ch.old_in), X(ch.old_out)
+                c, d = X(ch.new_in), X(ch.new_out)
+                band = mix(col, p["well"], .28 if sel else .16)
+                self.create_polygon(a, y_old + lane_h, b, y_old + lane_h, d, y_new, c, y_new, fill=band,
+                                    outline="")
+                for xa, xb, y in ((a, b, y_old), (c, d, y_new)):
+                    round_rect(self, xa, y + 3, max(xa + 2, xb), y + lane_h - 3, 4, fill=col, outline=outline,
+                               width=2)
+                    self.boxes.append((xa, y, xb, y + lane_h, n))
+            elif ch.kind == "new":
+                a, b = X(ch.new_in), X(ch.new_out)
+                round_rect(self, a, y_new + 3, max(a + 2, b), y_new + lane_h - 3, 4, fill=mix(p["amb"], p["well"], .35),
+                           outline=p["txt"] if sel else p["amb"], width=2 if sel else 1)
+                self.boxes.append((a, y_new, b, y_new + lane_h, n))
+            elif ch.kind == "removed":
+                a, b = X(ch.old_in), X(ch.old_out)
+                round_rect(self, a, y_old + 3, max(a + 2, b), y_old + lane_h - 3, 4, fill=p["recbg"],
+                           outline=p["txt"] if sel else p["rec"], width=2 if sel else 1, dash=None if sel else (3, 2))
+                self.boxes.append((a, y_old, b, y_old + lane_h, n))
+
+
+class SimpleTable(tk.Frame):
+    """Liste en lecture seule dessinée sur Canvas (lignes de 36 px, couleurs par cellule).
+    columns : [(clé, titre, largeur | 0 = extensible, police)] ; rows : [{clé: (texte, couleur)}]"""
+
+    RH, HEAD_H = 36, 34
+
+    def __init__(self, master, p, f, columns, on_select=None):
+        super().__init__(master, bg=p["bg"])
+        self.p, self.f, self.cols, self.on_select = p, f, columns, on_select
+        self.rows, self.sel = [], None
+        self.head = tk.Canvas(self, height=self.HEAD_H, highlightthickness=0, bd=0, bg=p["bg"])
+        self.head.pack(fill="x")
+        wrap = tk.Frame(self, bg=p["bg"])
+        wrap.pack(fill="both", expand=True)
+        self.body = tk.Canvas(wrap, highlightthickness=0, bd=0, bg=p["bg"], height=60, yscrollincrement=1)
+        self.sb = ttk.Scrollbar(wrap, orient="vertical", command=self.body.yview)
+        self.body.configure(yscrollcommand=self._yscroll)
+        self.body.pack(side="left", fill="both", expand=True)
+        self._sb = False
+        self.body.bind("<Configure>", lambda e: self.redraw())
+        self.body.bind("<Button-1>", self._click)
+        bind_scroll(self.body, lambda dx, dy: self.body.yview_scroll(int(-dy), "units"))
+
+    def _yscroll(self, a, b):
+        self.sb.set(a, b)
+        need = float(a) > 0 or float(b) < 1
+        if need != self._sb:
+            (self.sb.pack if need else self.sb.pack_forget)(**({"side": "right", "fill": "y"} if need else {}))
+            self._sb = need
+
+    def set_rows(self, rows, sel=None):
+        self.rows, self.sel = rows, sel
+        self.redraw()
+
+    def select(self, n):
+        self.sel = n
+        self.redraw()
+        if n is not None:
+            total = max(1, len(self.rows) * self.RH)
+            top, h = self.body.canvasy(0), self.body.winfo_height()
+            y1, y2 = n * self.RH, (n + 1) * self.RH
+            if y1 < top:
+                self.body.yview_moveto(y1 / total)
+            elif y2 > top + h:
+                self.body.yview_moveto((y2 - h) / total)
+
+    def _click(self, e):
+        n = int(self.body.canvasy(e.y) // self.RH)
+        if 0 <= n < len(self.rows):
+            self.select(n)
+            if self.on_select:
+                self.on_select(n)
+
+    def _layout(self, width):
+        fixed = sum(c[2] for c in self.cols)
+        flex = [c for c in self.cols if not c[2]]
+        rest = max(0, width - 24 - fixed) / max(1, len(flex))
+        out, x = [], 12
+        for key, title, cw, font in self.cols:
+            w = cw or rest
+            out.append((key, title, x, w, font))
+            x += w
+        return out
+
+    def redraw(self):
+        p, f = self.p, self.f
+        w = self.body.winfo_width()
+        if w < 50:
+            return
+        cols = self._layout(w)
+        self.head.delete("all")
+        for key, title, x, cw, _ in cols:
+            self.head.create_text(x, self.HEAD_H / 2 + 2, text=fit(f.cap, caps(title) if title != "#" else "#", cw - 10),
+                                  anchor="w", font=f.cap, fill=p["txt3"])
+        self.head.create_line(0, self.HEAD_H - 1, self.head.winfo_width() or w, self.HEAD_H - 1, fill=p["line"])
+        b = self.body
+        b.delete("all")
+        for n, r in enumerate(self.rows):
+            y = n * self.RH
+            if n == self.sel:
+                b.create_rectangle(0, y, w, y + self.RH, fill=p["selrow"], outline="")
+            b.create_line(0, y + self.RH - 1, w, y + self.RH - 1, fill=p["line"])
+            for key, _, x, cw, font in cols:
+                text, color = r.get(key, ("", None))
+                fnt = getattr(f, font)
+                b.create_text(x, y + self.RH / 2, text=fit(fnt, text, cw - 12), anchor="w", font=fnt,
+                              fill=color or p["txt"])
+        b.configure(scrollregion=(0, 0, w, max(1, len(self.rows) * self.RH)))

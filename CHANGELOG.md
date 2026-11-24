@@ -19,6 +19,14 @@
   clic sur le nom d'une sous-piste : toute la sous-piste ; glisser un bloc sur une autre
   sous-piste : il la rejoint. Après l'import, PAAF coupe / colle au même TC, renomme ou retire
   les pistes (liens de sélection et mode Slip activés le temps de l'opération, puis rétablis).
+- Mode « Versions » (changement de montage, étape 1) : compare deux AAF ou EDL (CMX3600),
+  ancienne et nouvelle version. Tous les clips image et son servent de repères (média source +
+  TC source) : liste des passages inchangés, déplacés, nouveaux et supprimés, vue des deux
+  versions reliées, rapport CSV, marqueurs posés dans la session.
+- Versions, étape 2 (expérimental, pas encore validé dans Pro Tools) : « Appliquer à une copie » enregistre une copie de la session, recopie
+  chaque morceau gardé (toutes pistes, automation comprise) à sa nouvelle place, range les
+  passages supprimés après la fin, pose des marqueurs et importe la nouvelle version sur des
+  pistes guides pour compléter les passages nouveaux.
 - Historique : annuler / rétablir les modifications du plan (⌘Z / ⇧⌘Z, boutons ↶ ↷, menu
   Édition > Historique pour revenir à une étape).
 - Défilement au trackpad et à la molette dans la liste et la timeline ; ⌥ + défilement : zoom.

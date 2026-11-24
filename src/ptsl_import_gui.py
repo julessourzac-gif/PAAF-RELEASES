@@ -33,6 +33,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import ptsl_import_sequentiel as core  # noqa: E402
 import aaf_inspect  # noqa: E402
+import conform  # noqa: E402
 import paaf_theme as th  # noqa: E402
 from paaf_strings import STRINGS  # noqa: E402
 
@@ -206,6 +207,13 @@ class App(tk.Tk):
         self.lang_var = tk.StringVar(value=self.lang)
         self.lang_var.trace_add("write", lambda *a: self._on_lang())
         self.insp_tab = tk.StringVar(value="file")
+        self.app_mode = tk.StringVar(value="import")
+        self.cf_base_var = tk.StringVar(value="")
+        self.cf_guide_var = tk.BooleanVar(value=True)
+        self.cf_keep_var = tk.BooleanVar(value=True)
+        self.cf_marks_var = tk.BooleanVar(value=True)
+        self.cf_copy_var = tk.BooleanVar(value=True)
+        self.cf = {}
         self.plan_msg = tk.StringVar()
 
     def _load_images(self):
@@ -260,6 +268,8 @@ class App(tk.Tk):
             tk.Label(hin, image=logo, bg=bg, bd=0).pack(side="left")
         else:
             tk.Label(hin, text=APP_NAME, font=f.h2, bg=bg, fg=p["txt"]).pack(side="left")
+        th.Segmented(hin, self.app_mode, [("import", t("mode_import")), ("conform", t("mode_conform"))], p, f,
+                     command=self._on_app_mode).pack(side="left", padx=(28, 0))
         self.update_btn = th.PillButton(hin, " ", self._open_update, p, f, kind="link", font=f.small_b)
         if self.update_info:
             self._show_update()
@@ -365,6 +375,7 @@ class App(tk.Tk):
         self.log_box.bind("<Configure>", self._draw_log_box)
 
         self.hint = tk.Label(body, text=t("hint"), font=f.small, fg=p["txt3"], bg=bg, anchor="w")
+        self._build_conform(body)
 
     def _draw_log_box(self, e):
         c = self.log_box
@@ -383,13 +394,18 @@ class App(tk.Tk):
 
     def _layout(self):
         v = self._view()
-        key = (v, self.show_log, bool(self.result and self._remaining()), self.session is not None)
+        conform_mode = self.app_mode.get() == "conform"
+        key = (v, self.show_log, bool(self.result and self._remaining()), self.session is not None, conform_mode)
         if key == self._view_key:
             return
         self._view_key = key
         for w in (self.actions, self.title_row, self.progress, self.place_bar, self.timeline, self.table,
-                  self.drop, self.log_head, self.log_box, self.hint):
+                  self.drop, self.log_head, self.log_box, self.hint, self.cfv):
             w.pack_forget()
+        if conform_mode:
+            self.cfv.pack(fill="both", expand=True)
+            self._cf_refresh()
+            return
         if v in ("empty", "ready"):
             self.actions.pack(fill="x", pady=(22, 0))
             self.title_row.pack(fill="x", pady=(14, 0))
@@ -676,7 +692,9 @@ class App(tk.Tk):
 
     def _on_drop(self, event):
         self.drop.set_hot(False)
-        if not self.busy:
+        if self.app_mode.get() == "conform":
+            self._cf_add_paths(self.tk.splitlist(event.data))
+        elif not self.busy:
             self._add_paths(self.tk.splitlist(event.data))
         return event.action
 
@@ -746,6 +764,26 @@ class App(tk.Tk):
                     if self.current == msg[1]:
                         self.current = None
                     self._refresh()
+                elif kind in ("cf_done", "cf_err"):
+                    self._cf_on_done(msg)
+                elif kind == "cf_applied":
+                    self.cf["applying"] = False
+                    self._cf_refresh()
+                    self.test_connection()
+                    if msg[1]:
+                        self.write_log(f"✗ {msg[1]}", "err")
+                        messagebox.showerror(APP_NAME, msg[1], parent=self)
+                    else:
+                        self.write_log(self.t("cf_applied", s=msg[2]), "ok")
+                        messagebox.showinfo(APP_NAME, self.t("cf_applied", s=msg[2]), parent=self)
+                elif kind == "cf_markers":
+                    self._cf_refresh()
+                    if msg[2]:
+                        self.write_log(f"✗ {self.t('cf_markers')} : {msg[2]}", "err")
+                        messagebox.showerror(APP_NAME, msg[2], parent=self)
+                    else:
+                        self.write_log(self.tn("log_cf_markers", msg[1]), "ok")
+                        messagebox.showinfo(APP_NAME, self.tn("log_cf_markers", msg[1]), parent=self)
                 elif kind == "update":
                     self.update_info = (msg[1], msg[2])
                     self._show_update()
@@ -1475,6 +1513,304 @@ class App(tk.Tk):
             self._touch()
             self._refresh()
             self._commit("h_tracks_move", n=len(keys), lane=lane)
+
+    # ------------------------------------------------------------------ versions de montage
+    def _build_conform(self, body):
+        """Vue « Versions » : comparaison de l'ancienne et de la nouvelle version d'un montage."""
+        p, f, t = self.p, self.f, self.t
+        bg = p["bg"]
+        cf = tk.Frame(body, bg=bg)
+        self.cfv = cf
+        top = tk.Frame(cf, bg=bg)
+        top.pack(fill="x", pady=(22, 0))
+        self.cf_slots = {}
+        for which, label in (("old", t("cf_old")), ("new", t("cf_new"))):
+            box = tk.Frame(top, bg=bg)
+            box.pack(side="left", padx=(0, 18))
+            tk.Label(box, text=th.caps(label), font=f.cap, fg=p["txt3"], bg=bg).pack(anchor="w")
+            row = tk.Frame(box, bg=bg)
+            row.pack(anchor="w", pady=(6, 0))
+            th.PillButton(row, t("cf_choose"), lambda w=which: self._cf_pick(w), p, f).pack(side="left")
+            name = tk.Label(row, text="—", font=f.body_b, fg=p["txt"], bg=bg, anchor="w")
+            name.pack(side="left", padx=(12, 0))
+            info = tk.Label(row, text="", font=f.small, fg=p["txt3"], bg=bg, anchor="w")
+            info.pack(side="left", padx=(10, 0))
+            self.cf_slots[which] = (name, info)
+            if which == "old":
+                tk.Label(top, text="→", font=f.sub, fg=p["txt3"], bg=bg).pack(side="left", padx=(0, 18), pady=(18, 0))
+        self.cf_apply_btn = th.PillButton(top, t("cf_apply"), self._cf_apply, p, f, kind="primary",
+                                          font=f.body_b, padx=22, height=42)
+        self.cf_apply_btn.pack(side="right", pady=(16, 0))
+        self.cf_marker_btn = th.PillButton(top, t("cf_markers"), self._cf_markers, p, f, height=42)
+        self.cf_marker_btn.pack(side="right", padx=(0, 10), pady=(16, 0))
+        self.cf_report_btn = th.PillButton(top, t("cf_report"), self._cf_export, p, f, kind="link")
+        self.cf_report_btn.pack(side="right", padx=(0, 14), pady=(16, 0))
+
+        place = tk.Frame(cf, bg=bg)
+        place.pack(fill="x", pady=(14, 0))
+        self.cf_base_box = th.FieldBox(place, t("cf_base"), self.cf_base_var, p, f)
+        self.cf_base_box.pack(side="left")
+        self.cf_base_box.entry.bind("<FocusOut>", lambda e: self._cf_refresh(), add="+")
+        tk.Label(place, text=t("cf_base_hint"), font=f.small, fg=p["txt3"], bg=bg).pack(side="left", padx=(14, 0))
+        for var, key in ((self.cf_copy_var, "cf_opt_copy"), (self.cf_guide_var, "cf_opt_guide"),
+                         (self.cf_keep_var, "cf_opt_keep"), (self.cf_marks_var, "cf_opt_marks")):
+            th.ToggleRow(place, var, t(key), p, f).pack(side="right", padx=(18, 0))
+
+        trow = tk.Frame(cf, bg=bg)
+        trow.pack(fill="x", pady=(16, 0))
+        self.cf_dot = th.Dot(trow, 14, p["txt3"], p)
+        self.cf_dot.pack(side="left", padx=(0, 18))
+        self.cf_title = th.RichLine(trow, p, height=52)
+        self.cf_title.pack(side="left", fill="x", expand=True)
+
+        self.cf_canvas = th.ConformCanvas(cf, p, f, (t("cf_old"), t("cf_new")), on_click=self._cf_select)
+        self.cf_canvas.pack(fill="x", pady=(12, 0))
+        self.cf_table = th.SimpleTable(cf, p, f, [
+            ("n", "#", 44, "mono_s"), ("kind", t("cf_col_kind"), 150, "small_b"),
+            ("old", t("cf_col_old"), 150, "mono_l"), ("new", t("cf_col_new"), 150, "mono_l"),
+            ("len", t("col_dur"), 120, "mono_l"), ("off", t("cf_col_off"), 120, "mono_l"),
+            ("label", t("cf_col_shots"), 0, "small")], on_select=self._cf_select)
+        self.cf_table.pack(fill="both", expand=True, pady=(14, 0))
+        tk.Label(cf, text=t("cf_hint"), font=f.small, fg=p["txt3"], bg=bg, anchor="w").pack(fill="x", pady=(12, 0))
+        self._cf_refresh()
+
+    def _on_app_mode(self):
+        self._view_key = None
+        self._close_editor(commit=True)
+        self._layout()
+
+    def _cf_pick(self, which):
+        f = filedialog.askopenfilename(title=self.t("cf_old" if which == "old" else "cf_new"),
+                                       filetypes=[("AAF / EDL", "*.aaf *.edl"), ("*", "*")])
+        if f:
+            self._cf_set(which, Path(f))
+
+    def _cf_add_paths(self, paths):
+        files = sorted((Path(x) for x in paths if Path(x).suffix.lower() in (".aaf", ".edl")),
+                       key=lambda q: core.natural_key(q))
+        if len(files) >= 2:
+            self.cf["old"] = self.cf["new"] = None
+            self._cf_set("old", files[0], run=False)
+            self._cf_set("new", files[1])
+        elif files:
+            self._cf_set("old" if not self.cf.get("old") else "new", files[0])
+
+    def _cf_set(self, which, path, run=True):
+        self.cf[which] = {"path": path, "edit": None}
+        self.cf["cmp"], self.cf["sel"], self.cf["error"] = None, None, ""
+        if which == "old":
+            self.cf_base_var.set("")
+        self._cf_refresh()
+        if run and self.cf.get("old") and self.cf.get("new"):
+            self._cf_run()
+
+    def _cf_run(self):
+        old, new = self.cf["old"]["path"], self.cf["new"]["path"]
+        fps = self.fps_base if self.session else None
+        self.cf["busy"] = True
+        self._cf_refresh()
+
+        def work():
+            try:
+                a = conform.load_edit(old, fps or 25)
+                b = conform.load_edit(new, fps or 25)
+                cmp = conform.compare(a, b, fps or b.fps or a.fps)
+                self.q.put(("cf_done", old, new, a, b, cmp))
+            except Exception as e:
+                self.q.put(("cf_err", old, new, str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _cf_on_done(self, msg):
+        kind, old, new = msg[0], msg[1], msg[2]
+        if not (self.cf.get("old") and self.cf.get("new") and self.cf["old"]["path"] == old
+                and self.cf["new"]["path"] == new):
+            return  # fichiers changés entre-temps
+        self.cf["busy"] = False
+        if kind == "cf_err":
+            self.cf["error"] = msg[3]
+        else:
+            _, _, _, a, b, cmp = msg
+            self.cf["old"]["edit"], self.cf["new"]["edit"], self.cf["cmp"] = a, b, cmp
+            if not self.cf_base_var.get().strip():
+                self.cf_base_var.set(self._cf_default_base(a, cmp.fps))
+        self._cf_refresh()
+
+    def _cf_default_base(self, edit, fps):
+        """TC de l'ancienne version dans la session : celui du plan d'import si le fichier y est,
+        sinon le TC de début de la séquence."""
+        for it in self.items:
+            if it["path"] == edit.path and it["tc"]:
+                return it["tc"]
+        return conform.fmt_tc(edit.start_frames * fps / (edit.fps or fps), fps)
+
+    def _cf_bases(self):
+        cmp = self.cf.get("cmp")
+        if not cmp:
+            return None
+        fps = cmp.fps
+        try:
+            old_base = core.TC(fps).to_frames(self.cf_base_var.get())
+        except ValueError:
+            old_base = cmp.old.start_frames
+        new_base = round(cmp.new.start_frames * fps / (cmp.new.fps or fps))
+        return old_base, new_base
+
+    def _cf_labels(self):
+        return {k: self.t("cf_k_" + k) for k in ("same", "move", "new", "removed")}
+
+    def _cf_refresh(self):
+        if not hasattr(self, "cf_table"):
+            return
+        p, f, t = self.p, self.f, self.t
+        for which in ("old", "new"):
+            name, info = self.cf_slots[which]
+            slot = self.cf.get(which)
+            if not slot:
+                name.configure(text="—")
+                info.configure(text="")
+                continue
+            name.configure(text=th.fit(f.body_b, slot["path"].name, 360))
+            e = slot.get("edit")
+            info.configure(text=(f"{e.kind} · {fmt_clock(e.duration)} · {self.tn('cf_n_shots', len(e.anchors))}"
+                                 if e else ""))
+        cmp = self.cf.get("cmp")
+        ready = bool(cmp and self.session and not self.busy and not self.cf.get("applying"))
+        self.cf_marker_btn.set_enabled(ready)
+        self.cf_apply_btn.set_enabled(ready and any(c.kind != "same" for c in cmp.changes))
+        self.cf_report_btn.set_enabled(bool(cmp))
+        if self.cf.get("busy"):
+            dot, segs = p["blu"], [(t("cf_running"), f.h1, p["txt"], 0)]
+        elif self.cf.get("error"):
+            dot, segs = p["rec"], [(t("cf_error"), f.h1, p["txt"], 0), (self.cf["error"], f.sub, p["rec"], 18)]
+        elif not cmp:
+            dot = p["txt3"]
+            segs = [(t("cf_empty_title"), f.h1, p["txt"], 0), (t("cf_empty_sub"), f.sub, p["txt2"], 18)]
+        else:
+            s = conform.summary(cmp)
+            n = s["move"] + s["new"] + s["removed"]
+            dot = p["grn"] if not n else p["blu"]
+            parts = []
+            if s["move"]:
+                parts.append(self.tn("cf_s_move", s["move"]))
+            if s["new"]:
+                parts.append(self.tn("cf_s_new", s["new"], d=f"{s['new_s']:.2f}".replace(".", ",")))
+            if s["removed"]:
+                parts.append(self.tn("cf_s_removed", s["removed"], d=f"{s['removed_s']:.2f}".replace(".", ",")))
+            parts.append(t("cf_s_match", a=cmp.matched, b=len(cmp.new.anchors)))
+            title = self.tn("cf_n_changes", n) if n else t("cf_identical")
+            segs = [(title, f.h1, p["txt"], 0), (" · ".join(parts), f.sub, p["txt2"], 18)]
+        self.cf_dot.set_color(dot)
+        self.cf_title.set(segs)
+        rows = []
+        colors = {"same": p["txt3"], "move": p["blu"], "new": p["amb"], "removed": p["rec"]}
+        if cmp:
+            labels = self._cf_labels()
+            old_base, new_base = self._cf_bases()
+            for r in conform.report_rows(cmp, old_base, new_base):
+                rows.append({"n": (str(r["n"]), p["txt3"]), "kind": (labels[r["kind"]], colors[r["kind"]]),
+                             "old": (r["old_in"] or "—", p["txt"] if r["old_in"] else p["txt3"]),
+                             "new": (r["new_in"] or "—", p["txt"] if r["new_in"] else p["txt3"]),
+                             "len": (r["length"], p["txt2"]), "off": (r["offset"], p["blu"]),
+                             "label": (r["label"], p["txt3"])})
+            total = max(round(cmp.old.duration * cmp.fps), round(cmp.new.duration * cmp.fps))
+            self.cf_canvas.set(cmp.changes, total, self.cf.get("sel"))
+        else:
+            self.cf_canvas.set([], 1)
+        self.cf_table.set_rows(rows, self.cf.get("sel"))
+
+    def _cf_select(self, n):
+        self.cf["sel"] = n
+        self.cf_table.select(n)
+        cmp = self.cf.get("cmp")
+        if cmp:
+            total = max(round(cmp.old.duration * cmp.fps), round(cmp.new.duration * cmp.fps))
+            self.cf_canvas.set(cmp.changes, total, n)
+
+    def _cf_export(self):
+        cmp = self.cf.get("cmp")
+        if not cmp:
+            return
+        fn = filedialog.asksaveasfilename(title=self.t("cf_report"), defaultextension=".csv",
+                                          initialfile=f"PAAF_changements_{cmp.old.path.stem}_{cmp.new.path.stem}.csv")
+        if fn:
+            old_base, new_base = self._cf_bases()
+            conform.write_csv(cmp, fn, old_base, new_base, self._cf_labels())
+            self.write_log(self.t("log_cf_report", f=fn), "info")
+
+    def _cf_apply(self):
+        """Étape 2 : adapte une copie de la session à la nouvelle version."""
+        cmp = self.cf.get("cmp")
+        if not cmp or not self.session or self.busy or self.cf.get("applying"):
+            return
+        t = self.t
+        old_base, _ = self._cf_bases()
+        version = re.sub(r"[^\w.-]+", "_", cmp.new.path.stem)[:24]
+        copy_name = f"{self.session}_conform_{version}"
+        s = conform.summary(cmp)
+        grow = round(cmp.new.duration * cmp.fps) - round(cmp.old.duration * cmp.fps)
+        msg = t("cf_confirm_apply" if self.cf_copy_var.get() else "cf_confirm_apply_open", s=self.session,
+                c=copy_name, tc=self.cf_base_var.get(), m=s["move"], n=s["new"], r=s["removed"])
+        if grow > 0:
+            end_old = conform.fmt_tc(old_base + round(cmp.old.duration * cmp.fps), cmp.fps)
+            end_new = conform.fmt_tc(old_base + round(cmp.new.duration * cmp.fps), cmp.fps)
+            msg += "\n\n" + t("cf_warn_longer", d=conform.fmt_offset(grow, cmp.fps), a=end_old, b=end_new)
+        if not messagebox.askyesno(APP_NAME, msg, icon="warning", parent=self):
+            return
+        self.cf["applying"] = True
+        self._cf_refresh()
+        self.show_log = True
+        self.write_log(t("log_cf_apply", s=self.session, v=cmp.new.path.name), "info")
+        labels = self._cf_labels()
+        guide_path = cmp.new.path if self.cf_guide_var.get() and cmp.new.kind == "AAF" else None
+        keep, marks, make_copy = self.cf_keep_var.get(), self.cf_marks_var.get(), self.cf_copy_var.get()
+        args = self._build_args()
+        args.match_tracks = False
+        tc_base = conform.fmt_tc(old_base, cmp.fps)
+
+        def guide(engine):
+            core.import_aaf(engine, guide_path, tc_base, args)
+
+        def work():
+            try:
+                with contextlib.redirect_stdout(QueueWriter(self.q)), core.connect() as engine:
+                    if make_copy:
+                        copy_path = conform.save_copy(engine, copy_name)
+                        print(f"  copie de la session : {copy_path}")
+                    else:
+                        print(f"  travail sur la session ouverte : {engine.session_name()}")
+                    conform.apply_to_session(engine, cmp, old_base, labels, version, keep_removed=keep,
+                                             markers=marks, guide=guide if guide_path else None)
+                self.q.put(("cf_applied", None, copy_name if make_copy else self.session))
+            except Exception as e:
+                self.q.put(("cf_applied", str(e), copy_name))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _cf_markers(self):
+        cmp = self.cf.get("cmp")
+        if not cmp or not self.session or self.busy:
+            return
+        old_base, _ = self._cf_bases()
+        version = cmp.new.path.stem[-12:]
+        markers = conform.marker_plan(cmp, old_base, version, self._cf_labels())
+        if not markers:
+            messagebox.showinfo(APP_NAME, self.t("cf_no_markers"), parent=self)
+            return
+        if not messagebox.askyesno(APP_NAME, self.tn("cf_confirm_markers", len(markers), s=self.session,
+                                                     tc=self.cf_base_var.get()), parent=self):
+            return
+        self.cf_marker_btn.set_enabled(False)
+
+        def work():
+            try:
+                with core.connect() as engine:
+                    n = conform.create_markers(engine, markers)
+                self.q.put(("cf_markers", n, None))
+            except Exception as e:
+                self.q.put(("cf_markers", 0, str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
 
     # ------------------------------------------------------------------ historique (annuler / rétablir)
     def _snapshot(self):

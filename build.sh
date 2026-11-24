@@ -16,7 +16,7 @@ echo "Build $NAME v$VERSION ($BUILD)"
 
 # Vérifications
 python3 -m py_compile "$ROOT/src/ptsl_import_sequentiel.py" "$ROOT/src/ptsl_import_gui.py" "$ROOT/src/aaf_inspect.py" \
-  "$ROOT/src/paaf_theme.py" "$ROOT/src/paaf_strings.py"
+  "$ROOT/src/paaf_theme.py" "$ROOT/src/paaf_strings.py" "$ROOT/src/conform.py"
 bash -n "$ROOT/macos/launcher"
 
 rm -rf "$DIST"
@@ -27,7 +27,7 @@ sed -e "s/@VERSION@/$VERSION/g" "$ROOT/macos/launcher" > "$APP/Contents/MacOS/la
 chmod 755 "$APP/Contents/MacOS/launcher"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 cp "$ROOT/macos/AppIcon.icns" "$ROOT/src/ptsl_import_sequentiel.py" "$ROOT/src/ptsl_import_gui.py" \
-   "$ROOT/src/aaf_inspect.py" "$ROOT/src/paaf_theme.py" "$ROOT/src/paaf_strings.py" "$APP/Contents/Resources/"
+   "$ROOT/src/aaf_inspect.py" "$ROOT/src/paaf_theme.py" "$ROOT/src/paaf_strings.py" "$ROOT/src/conform.py" "$APP/Contents/Resources/"
 mkdir -p "$APP/Contents/Resources/assets"
 cp "$ROOT"/src/assets/logo_64.png "$ROOT"/src/assets/logo_128.png "$ROOT"/src/assets/logo_256.png \
    "$ROOT"/src/assets/paaf-logo-clair-2x.png "$ROOT"/src/assets/paaf-logo-sombre-2x.png \

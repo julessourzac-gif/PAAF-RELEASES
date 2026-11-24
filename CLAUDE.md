@@ -37,6 +37,15 @@ Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en fran�
   Canvas (boutons, interrupteurs, segmenté, champs, timeline, tableau du plan `PlanTable`).
 - `src/paaf_strings.py` : tous les textes, FR et EN (clés `_one` / `_other` pour les pluriels).
 - `src/aaf_inspect.py` : lecture des AAF avec pyaaf2 (pistes, clips, médias, métadonnées).
+- `src/conform.py` : comparaison de deux versions d'un montage (AAF / EDL CMX3600). Repères =
+  tous les clips (calques imbriqués compris, calques de réglage / titres écartés), clé = nom du
+  média source normalisé (les UMID changent d'un export Premiere à l'autre), TC source absolu.
+  Vote par intervalle → `Segment`s (décalage nouveau − ancien), puis `Change`s
+  (same / move / new / removed), rapport CSV et marqueurs (`create_memory_location`).
+  Étape 2 (`apply_to_session`, après Save As) : copie des morceaux gardés dans une zone libre après
+  la fin de session, passages supprimés rangés plus loin, puis effacement de l'ancienne zone et
+  couper / coller du montage reconstruit à sa place. Testé sur timeline simulée ; à valider dans Pro Tools.
+  La timeline Pro Tools n'est pas lisible clip par clip par PTSL (API privée).
 - `macos/make_icon.py` : génère `macos/AppIcon.icns` et `src/assets/logo_*.png` (Pillow).
 - `macos/launcher` : lanceur bash auto-installant. Crée le venv dans
   `~/Library/Application Support/PAAF/env` (reprend l'ancien dossier « Import Pro Tools ») ;

@@ -436,8 +436,8 @@ class _EditContext:
     """Pendant les fusions : sélection liée à la piste et à la timeline, mode Slip.
     Les réglages de l'utilisateur sont rétablis ensuite."""
 
-    def __init__(self, engine):
-        self.engine, self.mode, self.options = engine, None, None
+    def __init__(self, engine, automation=False):
+        self.engine, self.mode, self.options, self.automation = engine, None, None, automation
 
     def __enter__(self):
         e = self.engine
@@ -450,6 +450,8 @@ class _EditContext:
             opts.CopyFrom(self.options)
             opts.link_timeline_and_edit_selection = True
             opts.link_track_and_edit_selection = True
+            if self.automation:  # l'automation suit les clips copiés / collés
+                opts.automation_follows_edit = True
             e.client.run(CId_SetEditModeOptions(edit_mode_options=opts))
             if self.mode != pt.EMO_Slip:
                 e.set_edit_mode(pt.EMO_Slip)

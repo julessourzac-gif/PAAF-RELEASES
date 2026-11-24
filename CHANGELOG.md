@@ -1,5 +1,12 @@
 # Historique des versions
 
+## 1.4.1
+- Application signée (Developer ID) et notarisée par Apple : elle s'ouvre sans passer par
+  clic droit > Ouvrir. Distribution en DMG (glisser PAAF dans Applications), zip signé aussi.
+- Exécutable compilé (Apple Silicon et Intel) qui lance le lanceur habituel.
+- Script `sign_notarize.sh` : build, signature, notarisation, agrafage, DMG.
+
+
 ## 1.4
 - Nouvelle interface (maquettes 1a « Liste d'abord ») : en-tête avec pastille de session,
   titre d'état (vide, prêt, import en cours, bilan), barre de placement à contrôle segmenté,

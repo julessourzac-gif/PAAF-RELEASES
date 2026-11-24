@@ -51,7 +51,12 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           awk -v t="## ${tag#v}" '$0==t{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/*.zip --clobber
+            # Fichiers signés et notarisés déjà joints (sign_notarize.sh) : on ne les écrase pas
+            if [ -n "$(gh release view "$tag" --json assets -q '.assets[].name')" ]; then
+              echo "Release déjà fournie : build non signé non joint."
+            else
+              gh release upload "$tag" dist/*.zip
+            fi
             # Notes du CHANGELOG si la release a été créée sans description
             if [ -z "$(gh release view "$tag" --json body -q .body)" ] && [ -s notes.md ]; then
               gh release edit "$tag" --notes-file notes.md

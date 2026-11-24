@@ -23,8 +23,17 @@ rm -rf "$DIST"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$BUILD/g" "$ROOT/macos/Info.plist" > "$APP/Contents/Info.plist"
-sed -e "s/@VERSION@/$VERSION/g" "$ROOT/macos/launcher" > "$APP/Contents/MacOS/launcher"
-chmod 755 "$APP/Contents/MacOS/launcher"
+# Lanceur bash dans Resources ; exécutable compilé (signable / notarisable) dans MacOS.
+sed -e "s/@VERSION@/$VERSION/g" "$ROOT/macos/launcher" > "$APP/Contents/Resources/launcher"
+chmod 755 "$APP/Contents/Resources/launcher"
+if [ "$(uname)" = "Darwin" ] && command -v clang >/dev/null; then
+  clang -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
+        -o "$APP/Contents/MacOS/PAAF" "$ROOT/macos/stub.c"
+else
+  # hors macOS (CI Linux) : le script sert directement d'exécutable
+  cp "$APP/Contents/Resources/launcher" "$APP/Contents/MacOS/PAAF"
+fi
+chmod 755 "$APP/Contents/MacOS/PAAF"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 cp "$ROOT/macos/AppIcon.icns" "$ROOT/src/ptsl_import_sequentiel.py" "$ROOT/src/ptsl_import_gui.py" \
    "$ROOT/src/aaf_inspect.py" "$ROOT/src/paaf_theme.py" "$ROOT/src/paaf_strings.py" "$ROOT/src/conform.py" "$APP/Contents/Resources/"

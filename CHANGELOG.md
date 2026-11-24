@@ -1,5 +1,13 @@
 # Historique des versions
 
+## 1.4.2
+- Correction : l'import d'un AAF ne créait aucune piste quand l'option « Pistes communes »
+  était active (réglage par défaut) et que la session n'avait pas encore de pistes de même nom.
+  Les pistes de l'AAF sont désormais toujours créées, puis PAAF les regroupe lui-même dans les
+  pistes de même nom.
+- Un import AAF qui ne crée aucune piste audio est signalé en échec (✗) au lieu de ✓.
+
+
 ## 1.4.1
 - Application signée (Developer ID) et notarisée par Apple : elle s'ouvre sans passer par
   clic droit > Ouvrir. Distribution en DMG (glisser PAAF dans Applications), zip signé aussi.

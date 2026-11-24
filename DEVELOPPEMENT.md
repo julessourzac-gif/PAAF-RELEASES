@@ -1,8 +1,8 @@
-# PAAF (ex-Import Pro Tools) — notes pour Claude Code
+# PAAF (ex-Import Pro Tools) — notes de développement
 
 Application macOS qui importe à la suite des AAF/OMF et des vidéos dans la session Pro Tools
 ouverte, chacun à un point d'entrée timecode, via le PTSL (gRPC sur localhost:31416, bibliothèque
-Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en français.
+Python `py-ptsl`).
 
 ## Structure
 
@@ -71,8 +71,7 @@ Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en fran�
   (S3X8746BP3) » avec hardened runtime, notarisation de l'app puis du DMG (`notarytool`, profil
   trousseau `PAAF`), agrafage, contrôle `spctl` → `dist/PAAF_v<VERSION>.dmg` (+ zip signé).
   `--sign-only` : sans envoi à Apple. Le profil se crée une fois par le propriétaire :
-  `xcrun notarytool store-credentials PAAF --apple-id … --team-id S3X8746BP3` (ne jamais saisir
-  son mot de passe à sa place). Le DMG signé est ensuite joint à la release à la main (`gh release
+  `xcrun notarytool store-credentials PAAF --apple-id … --team-id S3X8746BP3`. Le DMG signé est ensuite joint à la release à la main (`gh release
   upload`) ; le workflow GitHub ne fait qu'un build non signé.
   Ordre pour une release signée : PR fusionnée → `./sign_notarize.sh` → `gh release create vX.Y
   dist/PAAF_vX.Y.dmg dist/PAAF_vX.Y.zip --target main --notes-file …`. Le workflow, déclenché
@@ -80,17 +79,13 @@ Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en fran�
 - Version unique dans `VERSION` ; notes dans `CHANGELOG.md` (`## X.Y`).
 - Release : tag `vX.Y` poussé, ou release publiée depuis github.com → `.github/workflows/release.yml`
   (macos-latest) vérifie tag = VERSION, construit et joint le zip (crée la release si absente).
-- Depuis une session Claude dans le cloud, le push de tags est refusé (403) : pousser `main`, et
-  laisser le propriétaire créer la release sur github.com.
 
 ## Limites connues
 
 - Timecode drop-frame non géré.
 - Audio entrelacé > 2 canaux : éclaté en mono par ffmpeg ; sans ffmpeg, refusé.
-- Depuis le cloud, rien ne peut être testé contre Pro Tools : vérifier sur le Mac du
-  propriétaire, et demander les lignes `✗` / `!` du journal en cas d'échec. En session locale,
-  Pro Tools tourne souvent (PTSL sur localhost:31416) : lecture libre, mais demander avant
-  toute écriture dans la session ouverte.
+- Les tests contre Pro Tools se font sur un Mac où Pro Tools est lancé (PTSL sur
+  localhost:31416) ; en cas d'échec, regarder les lignes `✗` / `!` du journal.
 - OMF : pas d'aperçu (pyaaf2 ne lit que l'AAF).
 - Les builds de la CI (workflow) ne sont pas signés : seule la distribution faite avec
   `sign_notarize.sh` l'est.

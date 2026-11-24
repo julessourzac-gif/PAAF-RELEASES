@@ -44,7 +44,11 @@ Python `py-ptsl`). Le propriétaire est ingénieur du son ; il échange en fran�
   (same / move / new / removed), rapport CSV et marqueurs (`create_memory_location`).
   Étape 2 (`apply_to_session`, après Save As) : copie des morceaux gardés dans une zone libre après
   la fin de session, passages supprimés rangés plus loin, puis effacement de l'ancienne zone et
-  couper / coller du montage reconstruit à sa place. Testé sur timeline simulée ; à valider dans Pro Tools.
+  couper / coller du montage reconstruit à sa place. Validé dans Pro Tools 2026.1 (session TEST PAAF,
+  ENGIE V1 → V3, décalage global +10 s) : vérifié par export AAF des pistes d'origine. Sessions de 24 h :
+  zone de travail en fin de journée. Pro Tools refuse parfois les chemins de dossier (assertion
+  « Sys_FileLocMacOS ») : `save_copy` essaie plusieurs écritures ; l'export AAF veut une barre finale et
+  `CopyFromSourceMedia` (Link échoue sur des médias embarqués).
   La timeline Pro Tools n'est pas lisible clip par clip par PTSL (API privée).
 - `macos/make_icon.py` : génère `macos/AppIcon.icns` et `src/assets/logo_*.png` (Pillow).
 - `macos/launcher` : lanceur bash auto-installant. Crée le venv dans
